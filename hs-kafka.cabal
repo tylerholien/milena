@@ -1,0 +1,59 @@
+name:                hs-kafka
+
+-- http://www.haskell.org/haskellwiki/Package_versioning_policy
+-- PVP summary:      +-+------- breaking API changes
+--                   | | +----- non-breaking API additions
+--                   | | | +--- code changes with no API change
+version:             0.1.0.0
+
+synopsis:            A Kafka client for Haskell.
+
+-- description:
+-- license:
+license-file:        LICENSE
+author:              Tyler Holien
+maintainer:          tyler.holien@gmail.com
+
+-- A copyright notice.
+-- copyright:
+
+category:            Network
+build-type:          Simple
+stability:           alpha
+
+cabal-version:       >=1.10
+
+-- extra-source-files:
+
+library
+  -- Modules exported by the library.
+  exposed-modules:
+    Network.Kafka
+
+  -- Modules included in this library but not exported.
+  -- other-modules:
+
+  -- LANGUAGE extensions used by modules in this package.
+  -- other-extensions:
+
+  -- Other library packages from which modules are imported.
+  build-depends:
+    base == 4.*,
+    cereal
+
+  default-language: Haskell2010
+
+test-suite test
+  build-depends:
+    base == 4.*,
+    hs-kafka,
+    QuickCheck
+
+  hs-source-dirs:
+    test
+
+  main-is:
+    Main.hs
+
+  type:
+    exitcode-stdio-1.0
