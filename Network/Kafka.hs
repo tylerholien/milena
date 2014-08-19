@@ -1,188 +1,173 @@
 {-# LANGUAGE OverloadedStrings #-}
 module Network.Kafka where
 
+import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Network
 import System.IO
 import Data.Serialize.Get
-import Control.Monad (liftM)
+import Control.Monad (liftM, forever, replicateM)
+import Control.Concurrent.Chan
+import Control.Concurrent (forkIO)
+import Control.Exception (bracket)
+import Data.List (find, groupBy, sortBy, transpose)
+import Data.Maybe (mapMaybe)
 
 import Network.Kafka.Protocol
 
--- fetchRequest :: RequestMessage
-fr offset = FetchRequest $ FetchReq (-1, 1500, 1, [("lots", [(0, Offset offset, 1000)])])
--- FetchRequest (FetchReq (ReplicaId (-1),MaxWaitTime 15000,MinBytes 1,[(TopicName (KString "lots"),[(Partition 0,Offset 104,MaxBytes 10000)])]))
+withConnection :: (Handle -> IO c) -> IO c
+withConnection = withConnection' ("localhost", 9092)
 
--- produceRequest :: Key -> Value -> RequestMessage
--- produceRequest k v = ProduceRequest $ ProduceReq (1, 10000, [("test", [(0, [MessageSetMember (0, (Message (1, 0, 0, k, v)))])])])
+withConnection' :: (HostName, PortNumber) -> (Handle -> IO c) -> IO c
+withConnection' (host, port) = bracket (connectTo host $ PortNumber port) hClose
 
-pr :: B.ByteString -> RequestMessage
-pr msg = ProduceRequest (ProduceReq (RequiredAcks 1,Timeout 100,[(TopicName (KString "lots"),[(Partition 0,MessageSet [MessageSetMember (Offset 0,Message (Crc 1,MagicByte 0,Attributes 0,Key (MKB Nothing),Value (MKB (Just (KBytes msg)))))])])]))
--- Right (Response (CorrelationId 1,ProduceResponse (ProduceResp [(TopicName (KString "test"),[(Partition 0,ErrorCode 0,Offset 105)])])))
+produceLots :: ByteString -> [ByteString] -> Handle -> IO [Either String Response]
+produceLots t ms h = mapM go ms
+  where
+    go m = do
+      let r = client $ produceRequest 0 t Nothing m
+      -- threadDelay 200000
+      req r h
 
-req :: RequestMessage -> IO (Either String Response)
-req r = do
+produceLots' t ms h = mapM_ go ms
+  where
+    go m = do
+      let r = client $ produceRequest 0 t Nothing m
+      -- threadDelay 200000
+      req r h
+
+producer seed topic ms = do
+  resp <- withConnection' seed $ req $ client $ metadataRequest [topic]
+  leader <- case resp of
+    Left s -> error s
+    Right (Response (_, (MetadataResponse mr))) -> case leaderFor topic mr of
+      Nothing -> error "uh, there should probably be a leader..."
+      Just leader -> return leader
+    _ -> error "omg!"
+  -- let r = client . produceRequest 0 topic Nothing
+      -- go m = threadDelay 200000 >> req . (r m)
+  withConnection' leader $ req $ client $ produceRequests 0 topic ms
+
+producer' seed topic ms = do
+  resp <- withConnection' seed $ req $ client $ metadataRequest [topic]
+  leader <- case resp of
+    Left s -> error s
+    Right (Response (_, (MetadataResponse mr))) -> case leaderFor topic mr of
+      Nothing -> error "uh, there should probably be a leader..."
+      Just leader -> return leader
+    _ -> error "omg!"
+  -- let r = client . produceRequest 0 topic Nothing
+      -- go m = threadDelay 200000 >> req . (r m)
+  withConnection' leader $ produceLots topic ms
+
+producer'' seed topic ms = do
+  resp <- withConnection' seed $ req $ client $ metadataRequest [topic]
+  leader <- case resp of
+    Left s -> error s
+    Right (Response (_, (MetadataResponse mr))) -> case leaderFor topic mr of
+      Nothing -> error "uh, there should probably be a leader..."
+      Just leader -> return leader
+    _ -> error "omg!"
+  -- let r = client . produceRequest 0 topic Nothing
+      -- go m = threadDelay 200000 >> req . (r m)
+  withConnection' leader $ produceLots' topic ms
+
+produceStuff :: (HostName, PortNumber) -> ByteString -> [ByteString] -> IO [Either String Response]
+produceStuff seed topic ms = do
+  resp <- withConnection' seed $ req $ client $ metadataRequest [topic]
+  leaders <- case resp of
+    Left s -> error s
+    Right (Response (_, (MetadataResponse mr))) -> return $ leadersFor topic mr
+  chans <- replicateM (length leaders) newChan
+  outChan <- newChan
+  let actions = map (\(p, leader) -> (p, withConnection' leader)) leaders
+      actions' = zip chans actions
+  mapM_ (\ (chan, (p, (host, port))) -> forkIO $ do
+    h <- connectTo host $ PortNumber port
+    forever (readChan chan >>= ((flip req) h . client . produceRequests p topic) >>= writeChan outChan)) (zip chans leaders)
+
+  let mss = map (\xs -> map snd xs) $ groupBy (\ (x,_) (y,_) -> x == y) $ sortBy (\ (x,_) (y,_) -> x `compare` y) $ zip (cycle [1..5]) ms
+
+  mapM_ (\ (chan, ms) -> writeChan chan ms) (zip (cycle chans) mss)
+  replicateM (length mss) (readChan outChan)
+
+-- |As long as the supplied "Maybe" expression returns "Just _", the loop
+-- body will be called and passed the value contained in the 'Just'.  Results
+-- are discarded.
+whileJust_ :: (Monad m) => m (Maybe a) -> (a -> m b) -> m ()
+whileJust_ p f = go
+    where go = do
+            x <- p
+            case x of
+                Nothing -> return ()
+                Just x  -> do
+                        f x
+                        go
+
+chanReq :: Chan (Maybe a) -> Chan b -> (a -> IO b) -> IO ()
+chanReq cIn cOut f = do whileJust_ (readChan cIn) $ \msg -> f msg >>= writeChan cOut
+
+transformChan :: (a -> IO b) -> Chan (Maybe a) -> IO (Chan b)
+transformChan f cIn = do
+  cOut <- newChan
+  forkIO $ whileJust_ (readChan cIn) $ \msg -> f msg >>= writeChan cOut
+  return cOut
+
+-- leadersFor :: ByteString -> MetadataResponse -> [(Partition, (String, PortNumber))]
+leadersFor :: Num a => ByteString -> MetadataResponse -> [(a, (String, PortNumber))]
+leadersFor topicName (MetadataResp (bs, ts)) =
+  let bs' = map (\(Broker (NodeId x, (Host (KString h)), (Port p))) -> (x, (B.unpack h, fromIntegral p))) bs
+      isTopic (TopicMetadata (e, TName (KString tname),_)) =
+        tname == topicName && e == NoError
+  in case find isTopic ts of
+    (Just (TopicMetadata (_, _, ps))) ->
+      mapMaybe (\(PartitionMetadata (pErr, Partition pid, Leader (Just leaderId), _, _)) ->
+        (if pErr == NoError then lookup leaderId bs' else Nothing) >>= \x -> return (fromIntegral pid, x)) ps
+    Nothing -> []
+
+leaderFor :: ByteString -> MetadataResponse -> Maybe (String, PortNumber)
+leaderFor topicName (MetadataResp (bs, ts)) = do
+  let bs' = map (\(Broker (NodeId x, (Host (KString h)), (Port p))) -> (x, (B.unpack h, fromIntegral p))) bs
+      isTopic (TopicMetadata (_, TName (KString tname),_)) = tname == topicName
+      isPartition (PartitionMetadata (_, Partition x, _, _, _)) = x == 0
+  (TopicMetadata (tErr, _, ps)) <- find isTopic ts
+  if tErr /= NoError then Nothing else Just tErr
+  (PartitionMetadata (pErr, _, Leader (Just leaderId), _, _)) <- find isPartition ps
+  if pErr /= NoError then Nothing else Just tErr
+  lookup leaderId bs'
+
+-- Response (CorrelationId 0,MetadataResponse (MetadataResp (
+-- [Broker (NodeId 1,Host (KString "192.168.33.1"),Port 9093),Broker (NodeId 0,Host (KString "192.168.33.1"),Port 9092),Broker (NodeId 2,Host (KString "192.168.33.1"),Port 9094)],
+-- [TopicMetadata (
+--   ErrorCode 0,
+--   TName (KString "replicated"),
+--   [PartitionMetadata (
+--     ErrorCode 0,
+--     Partition 0,
+--     Leader (Just 1),
+--     Replicas [1,0,2],
+--     Isr [1,0])])])))
+
+-- Response (CorrelationId 0,ProduceResponse (ProduceResp [(TName (KString "replicated"),[(Partition 0,ErrorCode 6,Offset (-1))])]))
+
+req :: Request -> Handle -> IO (Either String Response)
+req r h = do
   let bytes = requestBytes r
-  h <- connectTo "localhost" $ PortNumber 9092
   B.hPut h bytes
   hFlush h
   let reader = B.hGet h
   rawLength <- reader 4
   let (Right dataLength) = runGet (liftM fromIntegral getWord32be) rawLength
   resp <- reader dataLength
-  hClose h
   return $ runGet (getResponse dataLength) resp
 
-reqbs :: RequestMessage -> IO B.ByteString
-reqbs r = do
+reqbs :: Request -> Handle -> IO ByteString
+reqbs r h = do
   let bytes = requestBytes r
-  h <- connectTo "localhost" $ PortNumber 9092
   B.hPut h bytes
   hFlush h
   let reader = B.hGet h
   rawLength <- reader 4
   let (Right dataLength) = runGet (liftM fromIntegral getWord32be) rawLength
   resp <- reader dataLength
-  hClose h
   return resp
-
-{-
--- CorrelationId         array len (1)         NodeId                slen (20)     str                       Port (9092)        
-   "\NUL\NUL\NUL\SOH" ++ "\NUL\NUL\NUL\SOH" ++ "\NUL\NUL\NUL\NUL" ++ "\NUL\DC4" ++ "tylers-macbook.local" ++ "\NUL\NUL#\132" ++ 
--- array len (1)         TopicErrorCode (4)  slen (4)      str
-   "\NUL\NUL\NUL\SOH" ++ "\NUL\NUL" ++       "\NUL\EOT" ++ "test" ++
---                                                                                                             NodeIds?
--- array len (1)         PartitionErrorCode  PartitionId           Leader                alen (1)              Replica(s)            alen (1)              Isr
-   "\NUL\NUL\NUL\SOH" ++ "\NUL\NUL" ++       "\NUL\NUL\NUL\NUL" ++ "\NUL\NUL\NUL\NUL" ++ "\NUL\NUL\NUL\SOH" ++ "\NUL\NUL\NUL\NUL" ++ "\NUL\NUL\NUL\SOH" ++ "\NUL\NUL\NUL\NUL"
-
-
-CorrelationId: \NUL\NUL\NUL\SOH
-alen (1): \NUL\NUL\NUL\SOH
-  \NUL\EOTtest
-  alen (1): \NUL\NUL\NUL\SOH
-    Partition: \NUL\NUL\NUL\NUL
-    ErrorCode: (0): \NUL\NUL
-    Offset (-1): \255\255\255\255\255\255\255\255
-
-alen (1): \NUL\NUL\NUL\SOH
-  \NUL\EOTtest
-  alen (1): \NUL\NUL\NUL\SOH
-    Partition: \NUL\NUL\NUL\NUL
-    ErrorCode: (0): \NUL\NUL
-    Offset (-1): \255\255\255\255\255\255\255\255
-
-CorrelationId: \NUL\NUL\NUL\SOH
-alen (1): \NUL\NUL\NUL\SOH
-  TopicName
-    slen (4): \NUL\EOT
-    test
-  alen (1): \NUL\NUL\NUL\SOH
-    Partition: \NUL\NUL\NUL\SOH
-    ErrorCode (3): \NUL\ETX
-    Offset: \255\255\255\255\255\255\255\255
-
-RequestLen (105): \NUL\NUL\NULi
-ApiKey (0): \NUL\NUL
-ApiVersion (0): \NUL\NUL
-CorrelationId (1): \NUL\NUL\NUL\SOH
-ClientId:
-  slen (x): \NUL\DLEexample_producer
-ProduceRequest:
-  RequiredAcks (0): \NUL\NUL
-  Timeout: \NUL\NUL\ENQ\220
-  alen (1): \NUL\NUL\NUL\SOH
-   TopicName: \NUL\EOTtest
-   alen (1): \NUL\NUL\NUL\SOH
-    Partition: \NUL\NUL\NUL\NUL
-    MessageSetSize: \NUL\NUL\NUL3
-    MessageSet:
-      Offset: \NUL\NUL\NUL\NUL\NUL\NUL\NUL\NUL
-      MessageSize: \NUL\NUL\NUL'
-      Message:
-        Crc: \229\CANvf
-        MagicByte: \NUL
-        Attributes: \NUL
-        Key:
-          blen (-1): \255\255\255\255
-        Value:
-          blen (x): \NUL\NUL\NUL\EM
-          bytes: 2014-08-06 12:06:50 -0500
-
-\NUL\NUL\NULP\NUL\NUL\NUL\NUL\NUL\NUL\NUL\SOH\NUL\bposeidon
-ProduceRequest:
-  RequiredAcks (1): \NUL\SOH
-  Timeout: \NUL\NUL'\DLE
-  alen (1): \NUL\NUL\NUL\SOH
-    TopicName: \NUL\EOTtest
-    alen (1): \NUL\NUL\NUL\SOH
-      Partition: \NUL\NUL\NUL\NUL
-      MessageSetSize: \NUL\NUL\NUL\SOH
-      MessageSet:
-        Offset: \NUL\NUL\NUL\NUL\NUL\NUL\NUL\NUL
-        MessageSize: \NUL\NUL\NUL\SYN
-        \DC1rE\224\NUL\NUL\NUL\NUL\NUL\EOTtest\NUL\NUL\NUL\EOTOMFG
-
-Offset: \NUL\NUL\NUL\NUL\NUL\NUL\NUL\NUL
-  Message:
-    Crc: \NUL\NUL\NUL\RS
-    MagicByte: \156
-    Attributes: \255
-    \168\ESC\NUL\NUL\NUL\NUL\NUL\ENQa key
-    \NUL\NUL\NUL\vIT WORKS!!!
-
-Message:
-  Crc: \156\255\168\ESC
-  MagicByte: \NUL
-  Attributes: \NUL
-  \NUL\NUL\NUL\ENQa key\NUL\NUL\NUL\vIT WORKS!!!
-
-CorrelationId: \NUL\NUL\NUL\SOH
-alen (2): \NUL\NUL\NUL\STX
-  TopicName: \NUL\aexample
-  alen (1): \NUL\NUL\NUL\SOH
-    Partition: \NUL\NUL\NUL\NUL
-    ErrorCode: \NUL\NUL
-    Offset: \NUL\NUL\NUL\NUL\NUL\NUL\NUL\ENQ
-    MessageSetSize: \NUL\NUL\NUL\213
-    MessageSet:
-      Offset: \NUL\NUL\NUL\NUL\NUL\NUL\NUL\NUL
-      MessageSize: \NUL\NUL\NUL'
-      Message:
-        Crc: \169\NUL\193\ESC
-        MagicByte: \NUL
-        Attributes: \NUL
-        Key (null): \255\255\255\255
-        Value: \NUL\NUL\NUL\EM2014-08-04 16:27:04 -0500
-      Offset: \NUL\NUL\NUL\NUL\NUL\NUL\NUL\SOH
-      MessageSize: \NUL\NUL\NUL'
-      Message:
-        Crc: ~\176\234\145
-        MagicByte: \NUL
-        Attributes: \NUL
-        Key,Val: \255\255\255\255\NUL\NUL\NUL\EM2014-08-06 12:04:29 -0500
-      Offset: \NUL\NUL\NUL\NUL\NUL\NUL\NUL\STX
-      MessageSize: \NUL\NUL\NUL\EM
-      Message:
-        Crc: \255wp,
-        MagicByte,Attr: \NUL\NUL
-        K,V: \NUL\NUL\NUL\aOMFG!!!\NUL\NUL\NUL\EOTOMFG
-      Offset: \NUL\NUL\NUL\NUL\NUL\NUL\NUL\ETX
-      MessageSize: \NUL\NUL\NUL\EM
-      Message:
-        Crc: \255wp,
-        MB,Atr: \NUL\NUL
-        K,V: \NUL\NUL\NUL\aOMFG!!!\NUL\NUL\NUL\EOTOMFG
-      Offset: \NUL\NUL\NUL\NUL\NUL\NUL\NUL\EOT
-      MessageSize: \NUL\NUL\NUL\EM
-      Message:
-        Crc: \255wp,
-        MagicByte,Attr: \NUL\NUL
-        K,V: \NUL\NUL\NUL\aOMFG!!!\NUL\NUL\NUL\EOTOMFG
-  TopicName: \NUL\EOTtest
-  alen (1): \NUL\NUL\NUL\SOH
-   Partition: \NUL\NUL\NUL\NUL
-   ErrorCode: \NUL\NUL
-   Offset: \NUL\NUL\NUL\NUL\NUL\NUL\NUL`
-   MessageSetSize: \NUL\NUL\NUL\185
-   MessageSet: \NUL\NUL\NUL\NUL\NUL\NUL\NUL[\NUL\NUL\NUL\EM)nb#\NUL\NUL\255\255\255\255\NUL\NUL\NUL\vIT WORKS!!!\NUL\NUL\NUL\NUL\NUL\NUL\NUL\\\NUL\NUL\NUL\EM\255wp,\NUL\NUL\NUL\NUL\NUL\aOMFG!!!\NUL\NUL\NUL\EOTOMFG\NUL\NUL\NUL\NUL\NUL\NUL\NUL]\NUL\NUL\NUL\EM\255wp,\NUL\NUL\NUL\NUL\NUL\aOMFG!!!\NUL\NUL\NUL\EOTOMFG\NUL\NUL\NUL\NUL\NUL\NUL\NUL^\NUL\NUL\NUL\EM\255wp,\NUL\NUL\NUL\NUL\NUL\aOMFG!!!\NUL\NUL\NUL\EOTOMFG\NUL\NUL\NUL\NUL\NUL\NUL\NUL_\NUL\NUL\NUL\EM\255wp,\NUL\NUL\NUL\NUL\NUL\aOMFG!!!\NUL\NUL\NUL\EOTOMFG
--}
