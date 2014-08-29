@@ -1,8 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
-{-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE TupleSections #-}
+{-# LANGUAGE NamedFieldPuns #-}
 
 module Network.Kafka.Protocol where
 
@@ -22,16 +21,9 @@ import Prelude hiding ((.), id)
 import Control.Category (Category(..))
 import Control.Monad (replicateM, liftM, liftM2, liftM3, liftM4, liftM5)
 import Control.Applicative (Alternative(..))
-import GHC.Exts(IsString(..), IsList(..))
+import GHC.Exts(IsString(..))
 import Data.Digest.CRC32
 import Data.Maybe (mapMaybe)
-
--- import Debug.Trace
-
--- traceShowM' :: (Show a, Monad m) => String -> a -> m ()
--- traceShowM' s x = traceM (s ++ " " ++ show x)
--- traceShow' :: Show a => String -> a -> a
--- traceShow' s x = trace (s ++ " " ++ show x) x
 
 client :: RequestMessage -> Request
 client = request "kafkah"
@@ -50,25 +42,15 @@ class HasError a where
 instance HasError TopicMetadata where hasError (TopicMetadata (e, _, _)) = e /= NoError
 instance HasError PartitionMetadata where hasError (PartitionMetadata (e, _, _, _, _)) = e /= NoError
 
--- TopicMetadata ( NoError
---               , TName (KString "partitioned")
---               , [ PartitionMetadata (NoError,Partition 2,Leader (Just 2),Replicas [2],Isr [2])
---                 , PartitionMetadata (NoError,Partition 1,Leader (Just 1),Replicas [1],Isr [1])
---                 , PartitionMetadata (NoError,Partition 0,Leader (Just 0),Replicas [0],Isr [0])])
-
--- MetadataResp ( [ Broker (NodeId 2,Host (KString "192.168.33.1"),Port 9094)
---                , Broker (NodeId 1,Host (KString "192.168.33.1"),Port 9093)
---                , Broker (NodeId 0,Host (KString "192.168.33.1"),Port 9092)]
---              , [])
-
 request :: KafkaString -> RequestMessage -> Request
 request clientId m = Request (CorrelationId 0, ClientId clientId, m)
 
-ocr :: Offset -> RequestMessage
-ocr offset = OffsetCommitRequest $ OffsetCommitReq ("group", [("test", [(0, offset, -1, "SO META!")])])
+ocr g offset = OffsetCommitRequest $ OffsetCommitReq (g, [("test", [(0, offset, -1, "SO META!")])])
 
-ofr :: RequestMessage
-ofr = OffsetFetchRequest $ OffsetFetchReq ("group", [("test", [0])])
+ofr g = OffsetFetchRequest $ OffsetFetchReq (g, [("test", [0])])
+
+cmr g = ConsumerMetadataRequest $ ConsumerMetadataReq g
+
 
 offsetRequest :: RequestMessage
 offsetRequest = OffsetRequest $ OffsetReq (-1, [("test", [(0, -1, 100)])])
@@ -80,45 +62,24 @@ offsetRequest'' = OffsetRequest $ OffsetReq (-1, [("test", [(0, maxBound, 100)])
 fetchRequest :: RequestMessage
 fetchRequest = FetchRequest $ FetchReq (ReplicaId (-1), MaxWaitTime 15000, MinBytes 1, [(TName (KString "test"), [(Partition 0, Offset 104, MaxBytes 10000)]), (TName (KString "example"), [(Partition 0, Offset 4, MaxBytes 10000)])])
 
---  Create a new consumer which reads the specified topic and partition from
---  the host.
--- 
---  @param [String] client_id  Used to identify this client should be unique.
---  @param [String] host
---  @param [Integer] port 
---  @param [String] topic Topic to read from
---  @param [Integer] partition Partitions are zero indexed.
---  @param [Integer,Symbol] offset 
---    Offset to start reading from. A negative offset can also be passed.
---    There are a couple special offsets which can be passed as symbols:
---      :earliest_offset       Start reading from the first offset the server has.
---      :latest_offset         Start reading from the latest offset the server has.
--- 
---  @param [Hash] options
---    Theses options can all be overridden in each individual fetch command.
--- 
---  @option options [:max_bytes] Maximum number of bytes to fetch
---    Default: 1048576 (1MB)
--- 
---  @option options [:max_wait_ms] 
---    How long to block until the server sends us data.
---    NOTE: This is only enforced if min_bytes is > 0.
---    Default: 100 (100ms)
--- 
---  @option options [:min_bytes] Smallest amount of data the server should send us.
---    Default: 1 (Send us data as soon as it is ready)
--- 
---  @api public
-
 data OffsetParam = Earliest
                  | Latest
                  | OffsetN Offset
+                 deriving (Show)
 
-fr maxWait minBytes maxBytes topic p o = FetchRequest $ FetchReq (ReplicaId (-1), MaxWaitTime maxWait, MinBytes minBytes, ts)
-  where ts = [(TName (KString topic), [(Partition p, Offset o, MaxBytes maxBytes)])]
+data FetchOpts = FetchOpts { maxWait :: Int32
+                           , minBytes :: Int32
+                           , maxBytes :: Int32}
 
-fetchMany maxWait minBytes maxBytes topics p o = FetchRequest $ FetchReq (ReplicaId (-1), MaxWaitTime maxWait, MinBytes minBytes, ts)
-  where ts = map (\topic -> (TName (KString topic), [(Partition p, Offset o, MaxBytes maxBytes)])) topics
+defaultFetchOpts = FetchOpts { maxWait = 100 -- milliseconds
+                             , minBytes = 1
+                             , maxBytes = 1048576 -- 1MB
+                             }
+
+fr :: FetchOpts -> [(ByteString, Int32, Int64)] -> RequestMessage
+fr (FetchOpts {maxWait, minBytes, maxBytes}) xs =
+  FetchRequest $ FetchReq (ReplicaId (-1), MaxWaitTime maxWait, MinBytes minBytes, ts)
+    where ts = map (\ (t, p, o) -> (TName (KString t), [(Partition p, Offset o, MaxBytes maxBytes)])) xs
 
 -- OPTION_DEFAULTS = {
 --   :compression_codec => nil,
@@ -135,7 +96,7 @@ fetchMany maxWait minBytes maxBytes topics p o = FetchRequest $ FetchReq (Replic
 -- produceRequest :: Key -> Value -> RequestMessage
 -- produceRequest k v = ProduceRequest $ ProduceReq (1, 10000, [("test", [(0, [MessageSetMember (0, (Message (1, 0, 0, k, v)))])])])
 
-produceRequest p topic k m = ProduceRequest $ ProduceReq (1, 10000, [((TName (KString topic)), [(Partition p, [MessageSetMember (0, (Message (1, 0, 0, (Key (MKB k)), (Value (MKB (Just (KBytes m)))))))])])])
+produceRequest p topic k m = ProduceRequest $ ProduceReq (1, 10000, [((TName (KString topic)), [(Partition p, MessageSet [MessageSetMember (0, (Message (1, 0, 0, (Key (MKB k)), (Value (MKB (Just (KBytes m)))))))])])])
 -- RequiredAcks 1,Timeout 10000,[(TName (KString "test"),[(Partition 0,
 --   MessageSet [MessageSetMember (Offset 0,Message (Crc 1,MagicByte 0,Attributes 0,Key (MKB Nothing),Value (MKB (Just (KBytes "hi")))))])])]
 
@@ -165,14 +126,22 @@ data ResponseMessage = MetadataResponse MetadataResponse
                      | OffsetResponse OffsetResponse
                      | OffsetCommitResponse OffsetCommitResponse
                      | OffsetFetchResponse OffsetFetchResponse
+                     | ConsumerMetadataResponse ConsumerMetadataResponse
                      deriving (Show, Eq)
 
+newtype ConsumerMetadataResponse = ConsumerMetadataResp (KafkaError, Broker) deriving (Show, Eq, Deserializable) -- CoordinatorId CoordinatorHost CoordinatorPort
+-- newtype ErrorCode = ErrorCode int16
+-- newtype CoordinatorId = CoordinatorId int32
+-- newtype CoordinatorHost = CoordinatorHost string
+-- newtype CoordinatorPort = CoordinatorPort int32
+
 getResponseMessage :: Int -> Get ResponseMessage
-getResponseMessage l = liftM MetadataResponse     (isolate l deserialize)
-                   <|> liftM OffsetResponse       (isolate l deserialize)
-                   <|> liftM ProduceResponse      (isolate l deserialize)
-                   <|> liftM OffsetCommitResponse (isolate l deserialize)
-                   <|> liftM OffsetFetchResponse  (isolate l deserialize)
+getResponseMessage l = liftM MetadataResponse          (isolate l deserialize)
+                   <|> liftM OffsetResponse            (isolate l deserialize)
+                   <|> liftM ProduceResponse           (isolate l deserialize)
+                   <|> liftM OffsetCommitResponse      (isolate l deserialize)
+                   <|> liftM OffsetFetchResponse       (isolate l deserialize)
+                   <|> liftM ConsumerMetadataResponse  (isolate l deserialize)
                    -- MUST try FetchResponse last!
                    --
                    -- As an optimization, Kafka might return a partial message
@@ -197,7 +166,7 @@ data RequestMessage = MetadataRequest MetadataRequest
                     | OffsetRequest OffsetRequest
                     | OffsetCommitRequest OffsetCommitRequest
                     | OffsetFetchRequest OffsetFetchRequest
-                    -- | ConsumerMetadataRequest ConsumerMetadataRequest
+                    | ConsumerMetadataRequest ConsumerMetadataRequest
                     deriving (Show, Eq)
 
 newtype MetadataRequest = MetadataReq [TopicName] deriving (Show, Eq, Serializable, Deserializable)
@@ -367,6 +336,7 @@ instance Serializable RequestMessage where
   serialize (MetadataRequest r) = serialize r
   serialize (OffsetCommitRequest r) = serialize r
   serialize (OffsetFetchRequest r) = serialize r
+  serialize (ConsumerMetadataRequest r) = serialize r
 
 instance Serializable Int64 where serialize = putWord64be . fromIntegral
 instance Serializable Int32 where serialize = putWord32be . fromIntegral
@@ -490,20 +460,3 @@ instance Deserializable Int64 where deserialize = getWord64be >>= return . fromI
 instance Deserializable Int32 where deserialize = getWord32be >>= return . fromIntegral
 instance Deserializable Int16 where deserialize = getWord16be >>= return . fromIntegral
 instance Deserializable Int8  where deserialize = getWord8    >>= return . fromIntegral
-
-instance IsList ProduceResponse where
-  type Item ProduceResponse = (TopicName, [(Partition, KafkaError, Offset)])
-  fromList xs = ProduceResp xs
-  toList (ProduceResp xs) = xs
-instance IsList Replicas where
-  type Item Replicas = Int32
-  fromList xs = Replicas xs
-  toList (Replicas xs) = xs
-instance IsList Isr where
-  type Item Isr = Int32
-  fromList xs = Isr xs
-  toList (Isr xs) = xs
-instance IsList MessageSet where
-  type Item MessageSet = MessageSetMember
-  fromList xs = MessageSet xs
-  toList (MessageSet xs) = xs
