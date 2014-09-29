@@ -1,6 +1,10 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE TupleSections #-}
+{-# LANGUAGE NamedFieldPuns #-}
+
 module Network.Kafka where
 
+import Data.Int
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Network
@@ -14,6 +18,16 @@ import Data.List (find, groupBy, sortBy, transpose)
 import Data.Maybe (mapMaybe)
 
 import Network.Kafka.Protocol
+
+{-
+
+Warning: none of this should actually be used in any way. This is basically a
+scratch pad/dumping ground to try stuff out to make sure it worked against a
+running Kafka instance. There are some usage examples in here, but they
+certainly aren't easy to read. I'll work on extracting the valuable examples
+into something useful.
+
+-}
 
 withConnection :: (Handle -> IO c) -> IO c
 withConnection = withConnection' ("localhost", 9092)
@@ -171,3 +185,96 @@ reqbs r h = do
   let (Right dataLength) = runGet (liftM fromIntegral getWord32be) rawLength
   resp <- reader dataLength
   return resp
+
+{-
+  The rest of the file used to live in the Protocol module. Most of it is
+  scratchpad stuff to make all the newtypes easier to work with in GHCi. In
+  the interest of making the Protocol module easier to understand, I just
+  shoved them all in here for now.
+-}
+
+client :: RequestMessage -> Request
+client = request "kafkah"
+
+request :: KafkaString -> RequestMessage -> Request
+request clientId m = Request (CorrelationId 0, ClientId clientId, m)
+
+metadata :: MetadataResponse -> [(TopicName, [(Partition, Broker)])]
+metadata (MetadataResp (bs, ts)) = omg ts
+  where
+    broker nodeId = lookup nodeId $ map (\ b@(Broker (NodeId x, _, _)) -> (x, b)) bs
+    withoutErrors = mapMaybe $ \t@(TopicMetadata (_, n, ps)) -> if hasError t then Just (n, ps) else Nothing
+    pbs (PartitionMetadata (_, p, Leader l, _, _)) = l >>= broker >>= return . (p,)
+    omg = map (\ (name, ps) -> (name, mapMaybe pbs ps)) . withoutErrors
+
+message :: Message -> Maybe ByteString
+message (Message (_, _, _, _, Value (MKB (Just (KBytes bs))))) = Just bs
+message (Message (_, _, _, _, Value (MKB Nothing))) = Nothing
+
+class HasError a where
+  hasError :: a -> Bool
+
+instance HasError TopicMetadata where hasError (TopicMetadata (e, _, _)) = e /= NoError
+instance HasError PartitionMetadata where hasError (PartitionMetadata (e, _, _, _, _)) = e /= NoError
+
+ocr g offset = OffsetCommitRequest $ OffsetCommitReq (g, [("test", [(0, offset, -1, "SO META!")])])
+
+ofr g = OffsetFetchRequest $ OffsetFetchReq (g, [("test", [0])])
+
+cmr g = ConsumerMetadataRequest $ ConsumerMetadataReq g
+
+-- jgr g = JoinGroupRequest $ JoinGroupReq (g, Timeout 10000, ["join-group-test"], ConsumerId "", PartitionAssignmentStrategy "strategy1")
+
+offsetRequest :: RequestMessage
+offsetRequest = OffsetRequest $ OffsetReq (-1, [("test", [(0, -1, 100)])])
+offsetRequest' :: RequestMessage
+offsetRequest' = OffsetRequest $ OffsetReq (-1, [("test", [(0, -2, 100)])])
+offsetRequest'' :: RequestMessage
+offsetRequest'' = OffsetRequest $ OffsetReq (-1, [("test", [(0, maxBound, 100)])])
+
+fetchRequest :: RequestMessage
+fetchRequest = FetchRequest $ FetchReq (ReplicaId (-1), MaxWaitTime 15000, MinBytes 1, [(TName (KString "test"), [(Partition 0, Offset 104, MaxBytes 10000)]), (TName (KString "example"), [(Partition 0, Offset 4, MaxBytes 10000)])])
+
+data OffsetParam = Earliest
+                 | Latest
+                 | OffsetN Offset
+                 deriving (Show)
+
+data FetchOpts = FetchOpts { maxWait :: Int32
+                           , minBytes :: Int32
+                           , maxBytes :: Int32}
+
+defaultFetchOpts = FetchOpts { maxWait = 100 -- milliseconds
+                             , minBytes = 1
+                             , maxBytes = 1048576 -- 1MB
+                             }
+
+fr :: FetchOpts -> [(ByteString, Int32, Int64)] -> RequestMessage
+fr (FetchOpts {maxWait, minBytes, maxBytes}) xs =
+  FetchRequest $ FetchReq (ReplicaId (-1), MaxWaitTime maxWait, MinBytes minBytes, ts)
+    where ts = map (\ (t, p, o) -> (TName (KString t), [(Partition p, Offset o, MaxBytes maxBytes)])) xs
+
+-- OPTION_DEFAULTS = {
+--   :compression_codec => nil,
+--   :compressed_topics => nil,
+--   :metadata_refresh_interval_ms => 600_000,
+--   :partitioner => nil,
+--   :max_send_retries => 3,
+--   :retry_backoff_ms => 100,
+--   :required_acks => 0,
+--   :ack_timeout_ms => 1500,
+-- }
+
+
+-- produceRequest :: Key -> Value -> RequestMessage
+-- produceRequest k v = ProduceRequest $ ProduceReq (1, 10000, [("test", [(0, [MessageSetMember (0, (Message (1, 0, 0, k, v)))])])])
+
+produceRequest p topic k m = ProduceRequest $ ProduceReq (1, 10000, [((TName (KString topic)), [(Partition p, MessageSet [MessageSetMember (0, (Message (1, 0, 0, (Key (MKB k)), (Value (MKB (Just (KBytes m)))))))])])])
+-- RequiredAcks 1,Timeout 10000,[(TName (KString "test"),[(Partition 0,
+--   MessageSet [MessageSetMember (Offset 0,Message (Crc 1,MagicByte 0,Attributes 0,Key (MKB Nothing),Value (MKB (Just (KBytes "hi")))))])])]
+
+produceRequests p topic ms = ProduceRequest $ ProduceReq (1, 10000, [((TName (KString topic)), [(Partition p, MessageSet ms')])])
+  where ms' = map (\m -> MessageSetMember (0, (Message (1, 0, 0, (Key (MKB Nothing)), (Value (MKB (Just (KBytes m)))))))) ms
+
+metadataRequest :: [ByteString] -> RequestMessage
+metadataRequest ts = MetadataRequest $ MetadataReq $ map (TName . KString) ts

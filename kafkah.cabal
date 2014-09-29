@@ -1,4 +1,4 @@
-name:                hs-kafka
+name:                kafkah
 
 -- http://www.haskell.org/haskellwiki/Package_versioning_policy
 -- PVP summary:      +-+------- breaking API changes
@@ -22,8 +22,6 @@ build-type:          Simple
 stability:           alpha
 
 cabal-version:       >=1.10
-
--- extra-source-files:
 
 library
   -- Modules exported by the library.
@@ -50,7 +48,7 @@ library
 test-suite test
   build-depends:
     base == 4.*,
-    hs-kafka,
+    kafkah,
     QuickCheck,
     cereal,
     bytestring

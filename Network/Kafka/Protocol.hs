@@ -1,16 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
-{-# LANGUAGE TupleSections #-}
-{-# LANGUAGE NamedFieldPuns #-}
 
 module Network.Kafka.Protocol where
-
--- module Network.Kafka.Protocol (
---   requestBytes,
---   RequestMessage,
---   metadataRequest,
---   Serializable(..),
---   Deserializable(..)) where
 
 import Data.Int
 import Data.ByteString.Char8 (ByteString)
@@ -23,88 +14,6 @@ import Control.Monad (replicateM, liftM, liftM2, liftM3, liftM4, liftM5)
 import Control.Applicative (Alternative(..))
 import GHC.Exts(IsString(..))
 import Data.Digest.CRC32
-import Data.Maybe (mapMaybe)
-
-client :: RequestMessage -> Request
-client = request "kafkah"
-
-metadata :: MetadataResponse -> [(TopicName, [(Partition, Broker)])]
-metadata (MetadataResp (bs, ts)) = omg ts
-  where
-    broker nodeId = lookup nodeId $ map (\ b@(Broker (NodeId x, _, _)) -> (x, b)) bs
-    withoutErrors = mapMaybe $ \t@(TopicMetadata (_, n, ps)) -> if hasError t then Just (n, ps) else Nothing
-    pbs (PartitionMetadata (_, p, Leader l, _, _)) = l >>= broker >>= return . (p,)
-    omg = map (\ (name, ps) -> (name, mapMaybe pbs ps)) . withoutErrors
-
-class HasError a where
-  hasError :: a -> Bool
-
-instance HasError TopicMetadata where hasError (TopicMetadata (e, _, _)) = e /= NoError
-instance HasError PartitionMetadata where hasError (PartitionMetadata (e, _, _, _, _)) = e /= NoError
-
-request :: KafkaString -> RequestMessage -> Request
-request clientId m = Request (CorrelationId 0, ClientId clientId, m)
-
-ocr g offset = OffsetCommitRequest $ OffsetCommitReq (g, [("test", [(0, offset, -1, "SO META!")])])
-
-ofr g = OffsetFetchRequest $ OffsetFetchReq (g, [("test", [0])])
-
-cmr g = ConsumerMetadataRequest $ ConsumerMetadataReq g
-
-
-offsetRequest :: RequestMessage
-offsetRequest = OffsetRequest $ OffsetReq (-1, [("test", [(0, -1, 100)])])
-offsetRequest' :: RequestMessage
-offsetRequest' = OffsetRequest $ OffsetReq (-1, [("test", [(0, -2, 100)])])
-offsetRequest'' :: RequestMessage
-offsetRequest'' = OffsetRequest $ OffsetReq (-1, [("test", [(0, maxBound, 100)])])
-
-fetchRequest :: RequestMessage
-fetchRequest = FetchRequest $ FetchReq (ReplicaId (-1), MaxWaitTime 15000, MinBytes 1, [(TName (KString "test"), [(Partition 0, Offset 104, MaxBytes 10000)]), (TName (KString "example"), [(Partition 0, Offset 4, MaxBytes 10000)])])
-
-data OffsetParam = Earliest
-                 | Latest
-                 | OffsetN Offset
-                 deriving (Show)
-
-data FetchOpts = FetchOpts { maxWait :: Int32
-                           , minBytes :: Int32
-                           , maxBytes :: Int32}
-
-defaultFetchOpts = FetchOpts { maxWait = 100 -- milliseconds
-                             , minBytes = 1
-                             , maxBytes = 1048576 -- 1MB
-                             }
-
-fr :: FetchOpts -> [(ByteString, Int32, Int64)] -> RequestMessage
-fr (FetchOpts {maxWait, minBytes, maxBytes}) xs =
-  FetchRequest $ FetchReq (ReplicaId (-1), MaxWaitTime maxWait, MinBytes minBytes, ts)
-    where ts = map (\ (t, p, o) -> (TName (KString t), [(Partition p, Offset o, MaxBytes maxBytes)])) xs
-
--- OPTION_DEFAULTS = {
---   :compression_codec => nil,
---   :compressed_topics => nil,
---   :metadata_refresh_interval_ms => 600_000,
---   :partitioner => nil,
---   :max_send_retries => 3,
---   :retry_backoff_ms => 100,
---   :required_acks => 0,
---   :ack_timeout_ms => 1500,
--- }
-
-
--- produceRequest :: Key -> Value -> RequestMessage
--- produceRequest k v = ProduceRequest $ ProduceReq (1, 10000, [("test", [(0, [MessageSetMember (0, (Message (1, 0, 0, k, v)))])])])
-
-produceRequest p topic k m = ProduceRequest $ ProduceReq (1, 10000, [((TName (KString topic)), [(Partition p, MessageSet [MessageSetMember (0, (Message (1, 0, 0, (Key (MKB k)), (Value (MKB (Just (KBytes m)))))))])])])
--- RequiredAcks 1,Timeout 10000,[(TName (KString "test"),[(Partition 0,
---   MessageSet [MessageSetMember (Offset 0,Message (Crc 1,MagicByte 0,Attributes 0,Key (MKB Nothing),Value (MKB (Just (KBytes "hi")))))])])]
-
-produceRequests p topic ms = ProduceRequest $ ProduceReq (1, 10000, [((TName (KString topic)), [(Partition p, MessageSet ms')])])
-  where ms' = map (\m -> MessageSetMember (0, (Message (1, 0, 0, (Key (MKB Nothing)), (Value (MKB (Just (KBytes m)))))))) ms
-
-metadataRequest :: [ByteString] -> RequestMessage
-metadataRequest ts = MetadataRequest $ MetadataReq $ map (TName . KString) ts
 
 class Serializable a where
   serialize :: a -> Put
@@ -182,8 +91,6 @@ newtype PartitionOffsets = PartitionOffsets (Partition, KafkaError, [Offset]) de
 
 newtype FetchResponse = FetchResp [(TopicName, [(Partition, KafkaError, Offset, MessageSet)])] deriving (Show, Eq, Serializable, Deserializable)
 
--- newtype ErrorCode = ErrorCode Int16 deriving (Show, Eq, Serializable, Deserializable, Num)
-
 newtype MetadataResponse = MetadataResp ([Broker], [TopicMetadata]) deriving (Show, Eq, Deserializable)
 newtype Broker = Broker (NodeId, Host, Port) deriving (Show, Eq, Deserializable)
 newtype NodeId = NodeId Int32 deriving (Show, Eq, Deserializable, Num)
@@ -229,7 +136,8 @@ newtype Value = Value MaybeKafkaBytes deriving (Show, Eq, Serializable, Deserial
 
 newtype MaybeKafkaBytes = MKB (Maybe KafkaBytes) deriving (Show, Eq)
 
--- newtype ConsumerMetadataRequest = ConsumerMetadataReq ConsumerGroup deriving (Show, Eq, Serializable)
+newtype ConsumerMetadataRequest = ConsumerMetadataReq ConsumerGroup deriving (Show, Eq, Serializable)
+
 newtype OffsetCommitRequest = OffsetCommitReq (ConsumerGroup, [(TopicName, [(Partition, Offset, Time, Metadata)])]) deriving (Show, Eq, Serializable)
 newtype OffsetFetchRequest = OffsetFetchReq (ConsumerGroup, [(TopicName, [Partition])]) deriving (Show, Eq, Serializable)
 newtype ConsumerGroup = ConsumerGroup KafkaString deriving (Show, Eq, Serializable, Deserializable, IsString)
@@ -299,8 +207,6 @@ instance Deserializable KafkaError where
       16   -> return NotCoordinatorForConsumerCode
       _    -> fail $ "invalid error code: " ++ show x
 
--- omginstances...
-
 newtype Request = Request (CorrelationId, ClientId, RequestMessage) deriving (Show, Eq)
 
 instance Serializable Request where
@@ -327,7 +233,7 @@ apiKey (OffsetRequest{}) = ApiKey 2
 apiKey (MetadataRequest{}) = ApiKey 3
 apiKey (OffsetCommitRequest{}) = ApiKey 8
 apiKey (OffsetFetchRequest{}) = ApiKey 9
--- apiKey (ConsumerMetadataRequest{}) = ApiKey 10
+apiKey (ConsumerMetadataRequest{}) = ApiKey 10
 
 instance Serializable RequestMessage where
   serialize (ProduceRequest r) = serialize r
@@ -399,14 +305,12 @@ instance Deserializable MessageSet where
     l <- deserialize :: Get Int32
     ms <- isolate (fromIntegral l) getMembers
     return $ MessageSet ms
-
-getMembers :: Get [MessageSetMember]
-getMembers = do
-  empty <- isEmpty
-  if empty
-  then return []
-  else liftM2 (:) deserialize getMembers <|> (remaining >>= getBytes >> return [])
-  -- else liftM2 (:) deserialize getMembers <|> (remaining >>= getBytes >>= traceShowM' "OMFG!" >> return [])
+      where getMembers :: Get [MessageSetMember]
+            getMembers = do
+              empty <- isEmpty
+              if empty
+              then return []
+              else liftM2 (:) deserialize getMembers <|> (remaining >>= getBytes >> return [])
 
 instance Deserializable MessageSetMember where
   deserialize = do
@@ -456,7 +360,7 @@ instance (Deserializable a, Deserializable b, Deserializable c, Deserializable d
 instance (Deserializable a, Deserializable b, Deserializable c, Deserializable d, Deserializable e) => Deserializable ((,,,,) a b c d e) where
   deserialize = liftM5 (,,,,) deserialize deserialize deserialize deserialize deserialize
 
-instance Deserializable Int64 where deserialize = getWord64be >>= return . fromIntegral
-instance Deserializable Int32 where deserialize = getWord32be >>= return . fromIntegral
-instance Deserializable Int16 where deserialize = getWord16be >>= return . fromIntegral
-instance Deserializable Int8  where deserialize = getWord8    >>= return . fromIntegral
+instance Deserializable Int64 where deserialize = liftM fromIntegral getWord64be
+instance Deserializable Int32 where deserialize = liftM fromIntegral getWord32be
+instance Deserializable Int16 where deserialize = liftM fromIntegral getWord16be
+instance Deserializable Int8  where deserialize = liftM fromIntegral getWord8
