@@ -5,59 +5,38 @@ name:                kafkah
 --                   | | +----- non-breaking API additions
 --                   | | | +--- code changes with no API change
 version:             0.1.0.0
-
 synopsis:            A Kafka client for Haskell.
-
--- description:
--- license:
+description:         Kafka client for Haskell
+license:             BSD3
 license-file:        LICENSE
 author:              Tyler Holien
 maintainer:          tyler.holien@gmail.com
-
--- A copyright notice.
--- copyright:
-
+copyright:           2014, Tyler Holien
 category:            Network
 build-type:          Simple
 stability:           alpha
-
 cabal-version:       >=1.10
 
 library
-  -- Modules exported by the library.
-  exposed-modules:
-    Network.Kafka,
-    Network.Kafka.Protocol
-
-  -- Modules included in this library but not exported.
-  -- other-modules:
-
-  -- LANGUAGE extensions used by modules in this package.
-  -- other-extensions:
-
-  -- Other library packages from which modules are imported.
-  build-depends:
-    base == 4.*,
-    cereal,
-    bytestring,
-    network,
-    digest
-
   default-language: Haskell2010
+  ghc-options:         -Wall
+  exposed-modules:     Network.Kafka,
+                       Network.Kafka.Protocol
+  build-depends:       base       >= 4.7   && <5,
+                       cereal     >=0.4      && <0.5,
+                       bytestring >=0.10     && <0.12,
+                       network    >=2.4      && <2.7,
+                       digest     >=0.0.1.0 && <0.0.2
 
 test-suite test
-  build-depends:
-    base == 4.*,
-    kafkah,
-    QuickCheck,
-    cereal,
-    bytestring
-
-  hs-source-dirs:
-    test
-
-  main-is:
-    Main.hs
-
-  type:
-    exitcode-stdio-1.0
+  default-language: Haskell2010
+  ghc-options:         -Wall -threaded
+  build-depends:       base,
+                       kafkah,
+                       QuickCheck,
+                       cereal,
+                       bytestring,
+                       hspec
+  hs-source-dirs:      test
+  main-is:             Main.hs
+  type:                exitcode-stdio-1.0
