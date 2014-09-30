@@ -204,7 +204,7 @@ reqbs r h = do
 -}
 
 client :: RequestMessage -> Request
-client = request "kafkah"
+client = request "milena"
 
 request :: KafkaString -> RequestMessage -> Request
 request clientId m = Request (CorrelationId 0, ClientId clientId, m)
