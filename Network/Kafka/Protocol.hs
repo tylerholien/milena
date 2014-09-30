@@ -307,8 +307,8 @@ instance Deserializable MessageSet where
     return $ MessageSet ms
       where getMembers :: Get [MessageSetMember]
             getMembers = do
-              empty <- isEmpty
-              if empty
+              wasEmpty <- isEmpty
+              if wasEmpty
               then return []
               else liftM2 (:) deserialize getMembers <|> (remaining >>= getBytes >> return [])
 

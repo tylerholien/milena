@@ -4,18 +4,18 @@
 
 module Network.Kafka where
 
-import Data.Int
-import Data.ByteString.Char8 (ByteString)
-import qualified Data.ByteString.Char8 as B
-import Network
-import System.IO
-import Data.Serialize.Get
-import Control.Monad (liftM, forever, replicateM)
 import Control.Concurrent.Chan
 import Control.Concurrent (forkIO)
 import Control.Exception (bracket)
-import Data.List (find, groupBy, sortBy, transpose)
+import Control.Monad (liftM, forever, replicateM)
+import Data.ByteString.Char8 (ByteString)
+import qualified Data.ByteString.Char8 as B
+import Data.Serialize.Get
+import Data.Int
+import Data.List (find, groupBy, sortBy)
 import Data.Maybe (mapMaybe)
+import Network
+import System.IO
 
 import Network.Kafka.Protocol
 
@@ -43,6 +43,7 @@ produceLots t ms h = mapM go ms
       -- threadDelay 200000
       req r h
 
+produceLots' :: ByteString -> [ByteString] -> Handle -> IO ()
 produceLots' t ms h = mapM_ go ms
   where
     go m = do
@@ -50,6 +51,7 @@ produceLots' t ms h = mapM_ go ms
       -- threadDelay 200000
       req r h
 
+producer :: (HostName, PortNumber) -> ByteString -> [ByteString] -> IO (Either String Response)
 producer seed topic ms = do
   resp <- withConnection' seed $ req $ client $ metadataRequest [topic]
   leader <- case resp of
@@ -62,6 +64,7 @@ producer seed topic ms = do
       -- go m = threadDelay 200000 >> req . (r m)
   withConnection' leader $ req $ client $ produceRequests 0 topic ms
 
+producer' :: (HostName, PortNumber) -> ByteString -> [ByteString] -> IO [Either String Response]
 producer' seed topic ms = do
   resp <- withConnection' seed $ req $ client $ metadataRequest [topic]
   leader <- case resp of
@@ -74,6 +77,7 @@ producer' seed topic ms = do
       -- go m = threadDelay 200000 >> req . (r m)
   withConnection' leader $ produceLots topic ms
 
+producer'' :: (HostName, PortNumber) -> ByteString -> [ByteString] -> IO ()
 producer'' seed topic ms = do
   resp <- withConnection' seed $ req $ client $ metadataRequest [topic]
   leader <- case resp of
@@ -89,20 +93,24 @@ producer'' seed topic ms = do
 produceStuff :: (HostName, PortNumber) -> ByteString -> [ByteString] -> IO [Either String Response]
 produceStuff seed topic ms = do
   resp <- withConnection' seed $ req $ client $ metadataRequest [topic]
+  -- pattern matches here aren't exhaustive
+  -- do we need to return an error if it's not a Metadata response?
   leaders <- case resp of
     Left s -> error s
     Right (Response (_, (MetadataResponse mr))) -> return $ leadersFor topic mr
   chans <- replicateM (length leaders) newChan
   outChan <- newChan
-  let actions = map (\(p, leader) -> (p, withConnection' leader)) leaders
-      actions' = zip chans actions
+  -- what's this doing?
+  -- let actions = map (\(p, leader) -> (p, withConnection' leader)) leaders
+  --     actions' = zip chans actions
   mapM_ (\ (chan, (p, (host, port))) -> forkIO $ do
     h <- connectTo host $ PortNumber port
     forever (readChan chan >>= ((flip req) h . client . produceRequests p topic) >>= writeChan outChan)) (zip chans leaders)
 
+  -- this could use splitting out w/ explicit type. What is it comparing?
   let mss = map (\xs -> map snd xs) $ groupBy (\ (x,_) (y,_) -> x == y) $ sortBy (\ (x,_) (y,_) -> x `compare` y) $ zip (cycle [1..5]) ms
 
-  mapM_ (\ (chan, ms) -> writeChan chan ms) (zip (cycle chans) mss)
+  mapM_ (\ (chan, ms') -> writeChan chan ms') (zip (cycle chans) mss)
   replicateM (length mss) (readChan outChan)
 
 -- |As long as the supplied "Maybe" expression returns "Just _", the loop
@@ -114,9 +122,9 @@ whileJust_ p f = go
             x <- p
             case x of
                 Nothing -> return ()
-                Just x  -> do
-                        f x
-                        go
+                Just w  -> do
+                  _ <- f w
+                  go
 
 chanReq :: Chan (Maybe a) -> Chan b -> (a -> IO b) -> IO ()
 chanReq cIn cOut f = do whileJust_ (readChan cIn) $ \msg -> f msg >>= writeChan cOut
@@ -124,7 +132,7 @@ chanReq cIn cOut f = do whileJust_ (readChan cIn) $ \msg -> f msg >>= writeChan 
 transformChan :: (a -> IO b) -> Chan (Maybe a) -> IO (Chan b)
 transformChan f cIn = do
   cOut <- newChan
-  forkIO $ whileJust_ (readChan cIn) $ \msg -> f msg >>= writeChan cOut
+  _ <- forkIO $ whileJust_ (readChan cIn) $ \msg -> f msg >>= writeChan cOut
   return cOut
 
 -- leadersFor :: ByteString -> MetadataResponse -> [(Partition, (String, PortNumber))]
@@ -144,10 +152,12 @@ leaderFor topicName (MetadataResp (bs, ts)) = do
   let bs' = map (\(Broker (NodeId x, (Host (KString h)), (Port p))) -> (x, (B.unpack h, fromIntegral p))) bs
       isTopic (TopicMetadata (_, TName (KString tname),_)) = tname == topicName
       isPartition (PartitionMetadata (_, Partition x, _, _, _)) = x == 0
-  (TopicMetadata (tErr, _, ps)) <- find isTopic ts
-  if tErr /= NoError then Nothing else Just tErr
-  (PartitionMetadata (pErr, _, Leader (Just leaderId), _, _)) <- find isPartition ps
-  if pErr /= NoError then Nothing else Just tErr
+  (TopicMetadata (_, _, ps)) <- find isTopic ts
+  -- null op
+  -- if tErr /= NoError then Nothing else Just tErr
+  (PartitionMetadata (_, _, Leader (Just leaderId), _, _)) <- find isPartition ps
+  -- null op?
+  -- if pErr /= NoError then Nothing else Just tErr
   lookup leaderId bs'
 
 -- Response (CorrelationId 0,MetadataResponse (MetadataResp (
@@ -217,10 +227,13 @@ class HasError a where
 instance HasError TopicMetadata where hasError (TopicMetadata (e, _, _)) = e /= NoError
 instance HasError PartitionMetadata where hasError (PartitionMetadata (e, _, _, _, _)) = e /= NoError
 
+ocr :: ConsumerGroup -> Offset -> RequestMessage
 ocr g offset = OffsetCommitRequest $ OffsetCommitReq (g, [("test", [(0, offset, -1, "SO META!")])])
 
+ofr :: ConsumerGroup -> RequestMessage
 ofr g = OffsetFetchRequest $ OffsetFetchReq (g, [("test", [0])])
 
+cmr :: ConsumerGroup -> RequestMessage
 cmr g = ConsumerMetadataRequest $ ConsumerMetadataReq g
 
 -- jgr g = JoinGroupRequest $ JoinGroupReq (g, Timeout 10000, ["join-group-test"], ConsumerId "", PartitionAssignmentStrategy "strategy1")
@@ -244,6 +257,7 @@ data FetchOpts = FetchOpts { maxWait :: Int32
                            , minBytes :: Int32
                            , maxBytes :: Int32}
 
+defaultFetchOpts :: FetchOpts
 defaultFetchOpts = FetchOpts { maxWait = 100 -- milliseconds
                              , minBytes = 1
                              , maxBytes = 1048576 -- 1MB
@@ -269,10 +283,12 @@ fr (FetchOpts {maxWait, minBytes, maxBytes}) xs =
 -- produceRequest :: Key -> Value -> RequestMessage
 -- produceRequest k v = ProduceRequest $ ProduceReq (1, 10000, [("test", [(0, [MessageSetMember (0, (Message (1, 0, 0, k, v)))])])])
 
+produceRequest :: Int32 -> ByteString -> Maybe KafkaBytes -> ByteString -> RequestMessage
 produceRequest p topic k m = ProduceRequest $ ProduceReq (1, 10000, [((TName (KString topic)), [(Partition p, MessageSet [MessageSetMember (0, (Message (1, 0, 0, (Key (MKB k)), (Value (MKB (Just (KBytes m)))))))])])])
 -- RequiredAcks 1,Timeout 10000,[(TName (KString "test"),[(Partition 0,
 --   MessageSet [MessageSetMember (Offset 0,Message (Crc 1,MagicByte 0,Attributes 0,Key (MKB Nothing),Value (MKB (Just (KBytes "hi")))))])])]
 
+produceRequests :: Int32 -> ByteString -> [ByteString] -> RequestMessage
 produceRequests p topic ms = ProduceRequest $ ProduceReq (1, 10000, [((TName (KString topic)), [(Partition p, MessageSet ms')])])
   where ms' = map (\m -> MessageSetMember (0, (Message (1, 0, 0, (Key (MKB Nothing)), (Value (MKB (Just (KBytes m)))))))) ms
 
