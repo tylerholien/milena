@@ -36,6 +36,12 @@ GHCi usage:
 
 (produceResponse, fetchResponse) <- responses
 
+-- error example:
+-- if you've set up the topic "test-topic" above, should get back two
+-- UnknownTopicOrPartition errors and one NoError error
+h <- connectTo "localhost" $ PortNumber 9092
+req (request "milena-examples" produceRequestErr) h
+
 
 -}
 
@@ -100,3 +106,28 @@ req r h = do
       resp <- reader dataLength
       return $ runGet (getResponse dataLength) resp
     Left s -> return $ Left s
+
+produceRequestErr :: RequestMessage
+produceRequestErr =
+  let topicName = TName (KString "test-topic")
+      invalidTopicName = TName (KString "topic-that-does-not-exist")
+      messageSet = MessageSet [messageSetMember]
+      offset = Offset 0 -- ignored when producer is sending to the broker
+      messageSetMember = MessageSetMember (offset, m)
+      -- check out the protocol doc for info about messages and message sets:
+      -- https://cwiki.apache.org/confluence/display/KAFKA/A+Guide+To+The+Kafka+Protocol#AGuideToTheKafkaProtocol-Messagesets
+      m = Message ( Crc 1 -- CRC32 gets computed during serialization
+                  , MagicByte 0
+                  , Attributes 0
+                  , Key (MKB Nothing)
+                  , Value (MKB (Just (KBytes "raw message bytes")))
+                  )
+  in ProduceRequest $ ProduceReq ( RequiredAcks 1
+                                 , Timeout 10000
+                                 , [ (topicName, [ (Partition 0, messageSet), -- this one's just fine and is processed by the server
+                                                   (Partition 1, messageSet)]) -- same topic, but partition doesn't exist
+                                   , (invalidTopicName, [(Partition 0, messageSet)])] -- topic name doesn't exist
+                                   -- NOTE: normally the message set would be
+                                   -- different for each topic-partition, but
+                                   -- this is just an example :-)
+                                 )
