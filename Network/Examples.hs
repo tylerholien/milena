@@ -42,6 +42,11 @@ GHCi usage:
 h <- connectTo "localhost" $ PortNumber 9092
 req (request "milena-examples" produceRequestErr) h
 
+-- metadata requests are really simple!
+let mr = MetadataRequest $ MetadataReq $ [(TName (KString "test-topic"))]
+req (request "milena-examples" mr) h
+
+-- it's what we do with the response that is a bit more complex... :-)
 
 -}
 
