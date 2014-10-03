@@ -218,8 +218,8 @@ metadata (MetadataResp (bs, ts)) = omg ts
     omg = map (\ (name, ps) -> (name, mapMaybe pbs ps)) . withoutErrors
 
 message :: Message -> Maybe ByteString
-message (Message (_, _, _, _, Value (MKB (Just (KBytes bs))))) = Just bs
-message (Message (_, _, _, _, Value (MKB Nothing))) = Nothing
+message (Message (_, _, _, _, Value (Just (KBytes bs)))) = Just bs
+message (Message (_, _, _, _, Value Nothing)) = Nothing
 
 class HasError a where
   hasError :: a -> Bool
@@ -284,13 +284,24 @@ fr (FetchOpts {maxWait, minBytes, maxBytes}) xs =
 -- produceRequest k v = ProduceRequest $ ProduceReq (1, 10000, [("test", [(0, [MessageSetMember (0, (Message (1, 0, 0, k, v)))])])])
 
 produceRequest :: Int32 -> ByteString -> Maybe KafkaBytes -> ByteString -> RequestMessage
-produceRequest p topic k m = ProduceRequest $ ProduceReq (1, 10000, [((TName (KString topic)), [(Partition p, MessageSet [MessageSetMember (0, (Message (1, 0, 0, (Key (MKB k)), (Value (MKB (Just (KBytes m)))))))])])])
+produceRequest p topic k m =
+  ProduceRequest $ ProduceReq
+  (1, 10000, [((TName (KString topic)),
+    [(Partition p, MessageSet
+     [MessageSetMember (0, (Message (1, 0, 0, (Key k),
+                           (Value (Just (KBytes m))))))])])])
+
 -- RequiredAcks 1,Timeout 10000,[(TName (KString "test"),[(Partition 0,
 --   MessageSet [MessageSetMember (Offset 0,Message (Crc 1,MagicByte 0,Attributes 0,Key (MKB Nothing),Value (MKB (Just (KBytes "hi")))))])])]
 
 produceRequests :: Int32 -> ByteString -> [ByteString] -> RequestMessage
-produceRequests p topic ms = ProduceRequest $ ProduceReq (1, 10000, [((TName (KString topic)), [(Partition p, MessageSet ms')])])
-  where ms' = map (\m -> MessageSetMember (0, (Message (1, 0, 0, (Key (MKB Nothing)), (Value (MKB (Just (KBytes m)))))))) ms
+produceRequests p topic ms =
+  ProduceRequest $ ProduceReq
+  (1, 10000, [((TName (KString topic)), [(Partition p, MessageSet ms')])])
+  where ms' = map
+              (\m -> MessageSetMember
+              (0, (Message (1, 0, 0, (Key Nothing),
+                  (Value (Just (KBytes m))))))) ms
 
 metadataRequest :: [ByteString] -> RequestMessage
 metadataRequest ts = MetadataRequest $ MetadataReq $ map (TName . KString) ts

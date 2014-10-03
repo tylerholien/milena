@@ -2,14 +2,16 @@
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE NamedFieldPuns #-}
 
-module Network.Examples where
+module Main where
 
 import Control.Monad (liftM)
 import qualified Data.ByteString.Char8 as B
 import Data.Serialize.Get
 import Network
 import System.IO
+import Test.Hspec
 
+-- import Network.Kafka
 import Network.Kafka.Protocol
 
 {-
@@ -78,8 +80,8 @@ produceRequest =
       m = Message ( Crc 1 -- CRC32 gets computed during serialization
                   , MagicByte 0
                   , Attributes 0
-                  , Key (MKB Nothing)
-                  , Value (MKB (Just (KBytes "raw message bytes")))
+                  , Key Nothing
+                  , Value (Just (KBytes "raw message bytes"))
                   )
   -- RequiredAcks requires special attention - see the doc:
   -- https://cwiki.apache.org/confluence/display/KAFKA/A+Guide+To+The+Kafka+Protocol#AGuideToTheKafkaProtocol-ProduceAPI
@@ -117,22 +119,58 @@ produceRequestErr =
   let topicName = TName (KString "test-topic")
       invalidTopicName = TName (KString "topic-that-does-not-exist")
       messageSet = MessageSet [messageSetMember]
-      offset = Offset 0 -- ignored when producer is sending to the broker
+      -- ignored when producer is sending to the broker
+      offset = Offset 0
       messageSetMember = MessageSetMember (offset, m)
       -- check out the protocol doc for info about messages and message sets:
       -- https://cwiki.apache.org/confluence/display/KAFKA/A+Guide+To+The+Kafka+Protocol#AGuideToTheKafkaProtocol-Messagesets
       m = Message ( Crc 1 -- CRC32 gets computed during serialization
                   , MagicByte 0
                   , Attributes 0
-                  , Key (MKB Nothing)
-                  , Value (MKB (Just (KBytes "raw message bytes")))
+                  , Key Nothing
+                  , Value (Just (KBytes "raw message bytes"))
                   )
-  in ProduceRequest $ ProduceReq ( RequiredAcks 1
-                                 , Timeout 10000
-                                 , [ (topicName, [ (Partition 0, messageSet), -- this one's just fine and is processed by the server
-                                                   (Partition 1, messageSet)]) -- same topic, but partition doesn't exist
-                                   , (invalidTopicName, [(Partition 0, messageSet)])] -- topic name doesn't exist
-                                   -- NOTE: normally the message set would be
-                                   -- different for each topic-partition, but
-                                   -- this is just an example :-)
-                                 )
+  in ProduceRequest $ ProduceReq
+     ( RequiredAcks 1
+     , Timeout 10000
+     
+     , [ (topicName, [
+             -- this one's just fine and is processed by the server
+             (Partition 0, messageSet),
+             -- same topic, but partition doesn't exist
+             (Partition 1, messageSet)])
+         -- topic name doesn't exist
+       , (invalidTopicName, [(Partition 0, messageSet)])] 
+       -- NOTE: normally the message set would be
+       -- different for each topic-partition, but
+       -- this is just an example :-)
+     )
+
+frUnp (FetchResponse (FetchResp ls)) = ls
+quadUnp (_, _, _, ms) = ms
+msUnp (MessageSet members) = members
+msmUnp (MessageSetMember (_, msg)) = msg
+msgUnp (Message (_, _, _, _, v)) = v
+vUnp (Value bs) = bs
+
+getBinary :: Response -> Maybe KafkaBytes
+getBinary (Response (_, fr)) = nextItem
+  where ls = frUnp fr
+        fstItem = head . snd . head $ ls
+        nextItem = vUnp (msgUnp (msmUnp (head (msUnp (quadUnp fstItem)))))
+getBinary _ = Nothing
+
+eGetBinary :: Either a Response -> Maybe KafkaBytes
+eGetBinary = either (const Nothing) getBinary
+
+expectedBytes :: Maybe KafkaBytes
+expectedBytes = Just (KBytes "raw message bytes")
+
+main :: IO ()
+main = hspec $ do
+
+  describe "can talk to local Kafka server" $ do
+    it "roundtrips producer -> consumer" $ do
+      (_, fetchResponse) <- responses
+      let actualBytes = eGetBinary fetchResponse
+      expectedBytes `shouldBe` actualBytes

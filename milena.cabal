@@ -33,10 +33,11 @@ test-suite test
   ghc-options:         -Wall -threaded
   build-depends:       base,
                        milena,
+                       network,
                        QuickCheck,
                        cereal,
                        bytestring,
                        hspec
   hs-source-dirs:      test
-  main-is:             Main.hs
+  main-is:             tests.hs
   type:                exitcode-stdio-1.0

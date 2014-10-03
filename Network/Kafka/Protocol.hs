@@ -84,12 +84,22 @@ newtype TopicName = TName KafkaString deriving (Show, Eq, Deserializable, Serial
 newtype KafkaBytes = KBytes ByteString deriving (Show, Eq, IsString)
 newtype KafkaString = KString ByteString deriving (Show, Eq, IsString)
 
-newtype ProduceResponse = ProduceResp [(TopicName, [(Partition, KafkaError, Offset)])] deriving (Show, Eq, Deserializable, Serializable)
+newtype ProduceResponse =
+  ProduceResp [(TopicName, [(Partition, KafkaError, Offset)])]
+  deriving (Show, Eq, Deserializable, Serializable)
 
-newtype OffsetResponse = OffsetResp [(TopicName, [PartitionOffsets])] deriving (Show, Eq, Deserializable)
-newtype PartitionOffsets = PartitionOffsets (Partition, KafkaError, [Offset]) deriving (Show, Eq, Deserializable)
+newtype OffsetResponse =
+  OffsetResp [(TopicName, [PartitionOffsets])]
+  deriving (Show, Eq, Deserializable)
 
-newtype FetchResponse = FetchResp [(TopicName, [(Partition, KafkaError, Offset, MessageSet)])] deriving (Show, Eq, Serializable, Deserializable)
+newtype PartitionOffsets =
+  PartitionOffsets (Partition, KafkaError, [Offset])
+  deriving (Show, Eq, Deserializable)
+
+newtype FetchResponse =
+  FetchResp [(TopicName,
+              [(Partition, KafkaError, Offset, MessageSet)])]
+  deriving (Show, Eq, Serializable, Deserializable)
 
 newtype MetadataResponse = MetadataResp ([Broker], [TopicMetadata]) deriving (Show, Eq, Deserializable)
 newtype Broker = Broker (NodeId, Host, Port) deriving (Show, Eq, Deserializable)
@@ -110,31 +120,45 @@ newtype OffsetRequest = OffsetReq (ReplicaId, [(TopicName, [(Partition, Time, Ma
 newtype Time = Time Int64 deriving (Show, Eq, Serializable, Num, Bounded)
 newtype MaxNumberOfOffsets = MaxNumberOfOffsets Int32 deriving (Show, Eq, Serializable, Num)
 
-newtype FetchRequest = FetchReq (ReplicaId, MaxWaitTime, MinBytes, [(TopicName, [(Partition, Offset, MaxBytes)])]) deriving (Show, Eq, Deserializable, Serializable)
+newtype FetchRequest =
+  FetchReq (ReplicaId, MaxWaitTime, MinBytes,
+            [(TopicName, [(Partition, Offset, MaxBytes)])])
+  deriving (Show, Eq, Deserializable, Serializable)
 
 newtype ReplicaId = ReplicaId Int32 deriving (Show, Eq, Num, Serializable, Deserializable)
 newtype MaxWaitTime = MaxWaitTime Int32 deriving (Show, Eq, Num, Serializable, Deserializable)
 newtype MinBytes = MinBytes Int32 deriving (Show, Eq, Num, Serializable, Deserializable)
 newtype MaxBytes = MaxBytes Int32 deriving (Show, Eq, Num, Serializable, Deserializable)
 
-newtype ProduceRequest = ProduceReq (RequiredAcks, Timeout, [(TopicName, [(Partition, MessageSet)])]) deriving (Show, Eq, Serializable)
+newtype ProduceRequest =
+  ProduceReq (RequiredAcks, Timeout,
+              [(TopicName, [(Partition, MessageSet)])])
+  deriving (Show, Eq, Serializable)
 
-newtype RequiredAcks = RequiredAcks Int16 deriving (Show, Eq, Serializable, Deserializable, Num)
-newtype Timeout = Timeout Int32 deriving (Show, Eq, Serializable, Deserializable, Num)
-newtype Partition = Partition Int32 deriving (Show, Eq, Serializable, Deserializable, Num)
+newtype RequiredAcks =
+  RequiredAcks Int16 deriving (Show, Eq, Serializable, Deserializable, Num)
+newtype Timeout =
+  Timeout Int32 deriving (Show, Eq, Serializable, Deserializable, Num)
+newtype Partition =
+  Partition Int32 deriving (Show, Eq, Serializable, Deserializable, Num)
 
-newtype MessageSet = MessageSet [MessageSetMember] deriving (Show, Eq)
-newtype MessageSetMember = MessageSetMember (Offset, Message) deriving (Show, Eq)
+newtype MessageSet =
+  MessageSet [MessageSetMember] deriving (Show, Eq)
+newtype MessageSetMember =
+  MessageSetMember (Offset, Message) deriving (Show, Eq)
+
 newtype Offset = Offset Int64 deriving (Show, Eq, Serializable, Deserializable, Num)
 
-newtype Message = Message (Crc, MagicByte, Attributes, Key, Value) deriving (Show, Eq, Deserializable)
+newtype Message =
+  Message (Crc, MagicByte, Attributes, Key, Value)
+  deriving (Show, Eq, Deserializable)
+
 newtype Crc = Crc Int32 deriving (Show, Eq, Serializable, Deserializable, Num)
 newtype MagicByte = MagicByte Int8 deriving (Show, Eq, Serializable, Deserializable, Num)
 newtype Attributes = Attributes Int8 deriving (Show, Eq, Serializable, Deserializable, Num)
-newtype Key = Key MaybeKafkaBytes deriving (Show, Eq, Serializable, Deserializable)
-newtype Value = Value MaybeKafkaBytes deriving (Show, Eq, Serializable, Deserializable)
 
-newtype MaybeKafkaBytes = MKB (Maybe KafkaBytes) deriving (Show, Eq)
+newtype Key = Key (Maybe KafkaBytes) deriving (Show, Eq)
+newtype Value = Value (Maybe KafkaBytes) deriving (Show, Eq)
 
 newtype ConsumerMetadataRequest = ConsumerMetadataReq ConsumerGroup deriving (Show, Eq, Serializable)
 
@@ -249,9 +273,17 @@ instance Serializable Int32 where serialize = putWord32be . fromIntegral
 instance Serializable Int16 where serialize = putWord16be . fromIntegral
 instance Serializable Int8  where serialize = putWord8    . fromIntegral
 
-instance Serializable MaybeKafkaBytes where
-  serialize (MKB (Just kbs)) = serialize kbs
-  serialize (MKB Nothing) = serialize (-1 :: Int32)
+-- instance Serializable MaybeKafkaBytes where
+--   serialize (MKB (Just kbs)) = serialize kbs
+--   serialize (MKB Nothing) = serialize (-1 :: Int32)
+
+instance Serializable Key where
+  serialize (Key (Just bs)) = serialize bs
+  serialize (Key Nothing)   = serialize (-1 :: Int32)
+
+instance Serializable Value where
+  serialize (Value (Just bs)) = serialize bs
+  serialize (Value Nothing)   = serialize (-1 :: Int32)
 
 instance Serializable KafkaString where
   serialize (KString bs) = do
@@ -337,14 +369,32 @@ instance Deserializable KafkaString where
     bs <- getByteString $ fromIntegral l
     return $ KString bs
 
-instance Deserializable MaybeKafkaBytes where
+-- instance Deserializable MaybeKafkaBytes where
+--   deserialize = do
+--     l <- deserialize :: Get Int32
+--     case l of
+--       -1 -> return $ MKB Nothing
+--       _ -> do 
+--         bs <- getByteString $ fromIntegral l
+--         return $ MKB (Just (KBytes bs))
+
+instance Deserializable Key where
   deserialize = do
     l <- deserialize :: Get Int32
     case l of
-      -1 -> return $ MKB Nothing
-      _ -> do 
+      -1 -> return (Key Nothing)
+      _ -> do
         bs <- getByteString $ fromIntegral l
-        return $ MKB (Just (KBytes bs))
+        return $ Key (Just (KBytes bs))
+
+instance Deserializable Value where
+  deserialize = do
+    l <- deserialize :: Get Int32
+    case l of
+      -1 -> return (Value Nothing)
+      _ -> do
+        bs <- getByteString $ fromIntegral l
+        return $ Value (Just (KBytes bs))
 
 instance (Deserializable a) => Deserializable [a] where
   deserialize = do
