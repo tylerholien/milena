@@ -354,7 +354,7 @@ instance Deserializable MessageSetMember where
 instance Deserializable Leader where
   deserialize = do
     x <- deserialize :: Get Int32
-    let l = if x == -1 then Leader Nothing else Leader $ Just x
+    let l = Leader $ if x == -1 then Nothing else Just x
     return l
 
 instance Deserializable KafkaBytes where

@@ -56,7 +56,7 @@ producer seed topic ms = do
   resp <- withConnection' seed $ req $ client $ metadataRequest [topic]
   leader <- case resp of
     Left s -> error s
-    Right (Response (_, (MetadataResponse mr))) -> case leaderFor topic mr of
+    Right (Response (_, MetadataResponse mr)) -> case leaderFor topic mr of
       Nothing -> error "uh, there should probably be a leader..."
       Just leader -> return leader
     _ -> error "omg!"
@@ -69,7 +69,7 @@ producer' seed topic ms = do
   resp <- withConnection' seed $ req $ client $ metadataRequest [topic]
   leader <- case resp of
     Left s -> error s
-    Right (Response (_, (MetadataResponse mr))) -> case leaderFor topic mr of
+    Right (Response (_, MetadataResponse mr)) -> case leaderFor topic mr of
       Nothing -> error "uh, there should probably be a leader..."
       Just leader -> return leader
     _ -> error "omg!"
@@ -82,7 +82,7 @@ producer'' seed topic ms = do
   resp <- withConnection' seed $ req $ client $ metadataRequest [topic]
   leader <- case resp of
     Left s -> error s
-    Right (Response (_, (MetadataResponse mr))) -> case leaderFor topic mr of
+    Right (Response (_, MetadataResponse mr)) -> case leaderFor topic mr of
       Nothing -> error "uh, there should probably be a leader..."
       Just leader -> return leader
     _ -> error "omg!"
@@ -97,7 +97,7 @@ produceStuff seed topic ms = do
   -- do we need to return an error if it's not a Metadata response?
   leaders <- case resp of
     Left s -> error s
-    Right (Response (_, (MetadataResponse mr))) -> return $ leadersFor topic mr
+    Right (Response (_, MetadataResponse mr)) -> return $ leadersFor topic mr
   chans <- replicateM (length leaders) newChan
   outChan <- newChan
   -- what's this doing?
@@ -105,10 +105,10 @@ produceStuff seed topic ms = do
   --     actions' = zip chans actions
   mapM_ (\ (chan, (p, (host, port))) -> forkIO $ do
     h <- connectTo host $ PortNumber port
-    forever (readChan chan >>= ((flip req) h . client . produceRequests p topic) >>= writeChan outChan)) (zip chans leaders)
+    forever (readChan chan >>= (flip req h . client . produceRequests p topic) >>= writeChan outChan)) (zip chans leaders)
 
   -- this could use splitting out w/ explicit type. What is it comparing?
-  let mss = map (\xs -> map snd xs) $ groupBy (\ (x,_) (y,_) -> x == y) $ sortBy (\ (x,_) (y,_) -> x `compare` y) $ zip (cycle [1..5]) ms
+  let mss = map (map snd) $ groupBy (\ (x,_) (y,_) -> x == y) $ sortBy (\ (x,_) (y,_) -> x `compare` y) $ zip (cycle [1..5]) ms
 
   mapM_ (\ (chan, ms') -> writeChan chan ms') (zip (cycle chans) mss)
   replicateM (length mss) (readChan outChan)
@@ -127,7 +127,7 @@ whileJust_ p f = go
                   go
 
 chanReq :: Chan (Maybe a) -> Chan b -> (a -> IO b) -> IO ()
-chanReq cIn cOut f = do whileJust_ (readChan cIn) $ \msg -> f msg >>= writeChan cOut
+chanReq cIn cOut f = whileJust_ (readChan cIn) $ \msg -> f msg >>= writeChan cOut
 
 transformChan :: (a -> IO b) -> Chan (Maybe a) -> IO (Chan b)
 transformChan f cIn = do
@@ -138,7 +138,7 @@ transformChan f cIn = do
 -- leadersFor :: ByteString -> MetadataResponse -> [(Partition, (String, PortNumber))]
 leadersFor :: Num a => ByteString -> MetadataResponse -> [(a, (String, PortNumber))]
 leadersFor topicName (MetadataResp (bs, ts)) =
-  let bs' = map (\(Broker (NodeId x, (Host (KString h)), (Port p))) -> (x, (B.unpack h, fromIntegral p))) bs
+  let bs' = map (\(Broker (NodeId x, Host (KString h), Port p)) -> (x, (B.unpack h, fromIntegral p))) bs
       isTopic (TopicMetadata (e, TName (KString tname),_)) =
         tname == topicName && e == NoError
   in case find isTopic ts of
@@ -149,7 +149,7 @@ leadersFor topicName (MetadataResp (bs, ts)) =
 
 leaderFor :: ByteString -> MetadataResponse -> Maybe (String, PortNumber)
 leaderFor topicName (MetadataResp (bs, ts)) = do
-  let bs' = map (\(Broker (NodeId x, (Host (KString h)), (Port p))) -> (x, (B.unpack h, fromIntegral p))) bs
+  let bs' = map (\(Broker (NodeId x, Host (KString h), Port p)) -> (x, (B.unpack h, fromIntegral p))) bs
       isTopic (TopicMetadata (_, TName (KString tname),_)) = tname == topicName
       isPartition (PartitionMetadata (_, Partition x, _, _, _)) = x == 0
   (TopicMetadata (_, _, ps)) <- find isTopic ts
@@ -193,8 +193,7 @@ reqbs r h = do
   let reader = B.hGet h
   rawLength <- reader 4
   let (Right dataLength) = runGet (liftM fromIntegral getWord32be) rawLength
-  resp <- reader dataLength
-  return resp
+  reader dataLength
 
 {-
   The rest of the file used to live in the Protocol module. Most of it is
@@ -286,10 +285,10 @@ fr (FetchOpts {maxWait, minBytes, maxBytes}) xs =
 produceRequest :: Int32 -> ByteString -> Maybe KafkaBytes -> ByteString -> RequestMessage
 produceRequest p topic k m =
   ProduceRequest $ ProduceReq
-  (1, 10000, [((TName (KString topic)),
+  (1, 10000, [(TName (KString topic),
     [(Partition p, MessageSet
-     [MessageSetMember (0, (Message (1, 0, 0, (Key k),
-                           (Value (Just (KBytes m))))))])])])
+     [MessageSetMember (0, Message (1, 0, 0, Key k,
+                           Value (Just (KBytes m))))])])])
 
 -- RequiredAcks 1,Timeout 10000,[(TName (KString "test"),[(Partition 0,
 --   MessageSet [MessageSetMember (Offset 0,Message (Crc 1,MagicByte 0,Attributes 0,Key (MKB Nothing),Value (MKB (Just (KBytes "hi")))))])])]
@@ -297,11 +296,11 @@ produceRequest p topic k m =
 produceRequests :: Int32 -> ByteString -> [ByteString] -> RequestMessage
 produceRequests p topic ms =
   ProduceRequest $ ProduceReq
-  (1, 10000, [((TName (KString topic)), [(Partition p, MessageSet ms')])])
+  (1, 10000, [(TName (KString topic), [(Partition p, MessageSet ms')])])
   where ms' = map
               (\m -> MessageSetMember
-              (0, (Message (1, 0, 0, (Key Nothing),
-                  (Value (Just (KBytes m))))))) ms
+              (0, Message (1, 0, 0, Key Nothing,
+                  Value (Just (KBytes m))))) ms
 
 metadataRequest :: [ByteString] -> RequestMessage
 metadataRequest ts = MetadataRequest $ MetadataReq $ map (TName . KString) ts
