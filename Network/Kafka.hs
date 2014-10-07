@@ -221,7 +221,7 @@ defaultMessageMagicByte = 0
 
 -- | Default: @Nothing@
 defaultMessageKey :: Key
-defaultMessageKey = Key $ MKB Nothing
+defaultMessageKey = Key $ Nothing
 
 -- | Default: @0@
 defaultMessageAttributes :: Attributes
@@ -229,7 +229,7 @@ defaultMessageAttributes = 0
 
 -- | Construct a message from a string of bytes using default attributes.
 makeMessage :: ByteString -> Message
-makeMessage m = Message (defaultMessageCrc, defaultMessageMagicByte, defaultMessageAttributes, defaultMessageKey, Value (MKB (Just (KBytes m))))
+makeMessage m = Message (defaultMessageCrc, defaultMessageMagicByte, defaultMessageAttributes, defaultMessageKey, Value (Just (KBytes m)))
 
 -- * Fetching
 
@@ -253,7 +253,7 @@ fetch request =
 -- | Extract out messages with their topics from a fetch response.
 fetchMessages :: FetchResponse -> [TopicAndMessage]
 fetchMessages fr = (fr ^.. fetchResponseFields . folded) >>= tam
-    where tam a = TopicAndMessage (a ^. _1) <$> a ^.. _2 . folded . _4 . messageSetMembers . folded . message
+    where tam a = TopicAndMessage (a ^. _1) <$> a ^.. _2 . folded . _4 . messageSetMembers . folded . setMessage
 
 -- * Producing
 

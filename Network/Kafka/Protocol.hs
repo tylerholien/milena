@@ -76,12 +76,21 @@ newtype TopicName = TName { _tName :: KafkaString } deriving (Show, Eq, Ord, Des
 newtype KafkaBytes = KBytes { _kafkaByteString :: ByteString } deriving (Show, Eq, IsString)
 newtype KafkaString = KString { _kString :: ByteString } deriving (Show, Eq, Ord, IsString)
 
-newtype ProduceResponse = ProduceResp { _produceResponseFields :: [(TopicName, [(Partition, KafkaError, Offset)])] } deriving (Show, Eq, Deserializable, Serializable)
+newtype ProduceResponse =
+  ProduceResp { _produceResponseFields :: [(TopicName, [(Partition, KafkaError, Offset)])] }
+  deriving (Show, Eq, Deserializable, Serializable)
 
-newtype OffsetResponse = OffsetResp { _offsetResponseFields :: [(TopicName, [PartitionOffsets])] } deriving (Show, Eq, Deserializable)
-newtype PartitionOffsets = PartitionOffsets { _partitionOffsetsFields :: (Partition, KafkaError, [Offset]) } deriving (Show, Eq, Deserializable)
+newtype OffsetResponse =
+  OffsetResp { _offsetResponseFields :: [(TopicName, [PartitionOffsets])] }
+  deriving (Show, Eq, Deserializable)
 
-newtype FetchResponse = FetchResp { _fetchResponseFields :: [(TopicName, [(Partition, KafkaError, Offset, MessageSet)])] } deriving (Show, Eq, Serializable, Deserializable)
+newtype PartitionOffsets =
+  PartitionOffsets { _partitionOffsetsFields :: (Partition, KafkaError, [Offset]) }
+  deriving (Show, Eq, Deserializable)
+
+newtype FetchResponse =
+  FetchResp { _fetchResponseFields :: [(TopicName, [(Partition, KafkaError, Offset, MessageSet)])] }
+  deriving (Show, Eq, Serializable, Deserializable)
 
 newtype MetadataResponse = MetadataResp { _metadataResponseFields :: ([Broker], [TopicMetadata]) } deriving (Show, Eq, Deserializable)
 newtype Broker = Broker { _brokerFields :: (NodeId, Host, Port) } deriving (Show, Eq, Deserializable)
@@ -102,31 +111,45 @@ newtype OffsetRequest = OffsetReq (ReplicaId, [(TopicName, [(Partition, Time, Ma
 newtype Time = Time { _timeInt :: Int64 } deriving (Show, Eq, Serializable, Num, Bounded)
 newtype MaxNumberOfOffsets = MaxNumberOfOffsets Int32 deriving (Show, Eq, Serializable, Num)
 
-newtype FetchRequest = FetchReq (ReplicaId, MaxWaitTime, MinBytes, [(TopicName, [(Partition, Offset, MaxBytes)])]) deriving (Show, Eq, Deserializable, Serializable)
+newtype FetchRequest =
+  FetchReq (ReplicaId, MaxWaitTime, MinBytes,
+            [(TopicName, [(Partition, Offset, MaxBytes)])])
+  deriving (Show, Eq, Deserializable, Serializable)
 
 newtype ReplicaId = ReplicaId Int32 deriving (Show, Eq, Num, Serializable, Deserializable)
 newtype MaxWaitTime = MaxWaitTime Int32 deriving (Show, Eq, Num, Serializable, Deserializable)
 newtype MinBytes = MinBytes Int32 deriving (Show, Eq, Num, Serializable, Deserializable)
 newtype MaxBytes = MaxBytes Int32 deriving (Show, Eq, Num, Serializable, Deserializable)
 
-newtype ProduceRequest = ProduceReq (RequiredAcks, Timeout, [(TopicName, [(Partition, MessageSet)])]) deriving (Show, Eq, Serializable)
+newtype ProduceRequest =
+  ProduceReq (RequiredAcks, Timeout,
+              [(TopicName, [(Partition, MessageSet)])])
+  deriving (Show, Eq, Serializable)
 
-newtype RequiredAcks = RequiredAcks Int16 deriving (Show, Eq, Serializable, Deserializable, Num)
-newtype Timeout = Timeout Int32 deriving (Show, Eq, Serializable, Deserializable, Num)
-newtype Partition = Partition { _partitionInt :: Int32 } deriving (Show, Eq, Ord, Serializable, Deserializable, Num)
+newtype RequiredAcks =
+  RequiredAcks Int16 deriving (Show, Eq, Serializable, Deserializable, Num)
+newtype Timeout =
+  Timeout Int32 deriving (Show, Eq, Serializable, Deserializable, Num)
+newtype Partition =
+  Partition Int32 deriving (Show, Ord, Eq, Serializable, Deserializable, Num)
 
-newtype MessageSet = MessageSet { _messageSetMembers :: [MessageSetMember] } deriving (Show, Eq)
-data MessageSetMember = MessageSetMember { _offset :: Offset, _message :: Message } deriving (Show, Eq)
-newtype Offset = Offset { _offsetInt :: Int64 } deriving (Show, Eq, Serializable, Deserializable, Num)
+newtype MessageSet =
+  MessageSet { _messageSetMembers :: [MessageSetMember] } deriving (Show, Eq)
+data MessageSetMember =
+  MessageSetMember { _setOffset :: Offset, _setMessage :: Message } deriving (Show, Eq)
 
-newtype Message = Message { _messageFields :: (Crc, MagicByte, Attributes, Key, Value) } deriving (Show, Eq, Deserializable)
+newtype Offset = Offset Int64 deriving (Show, Eq, Serializable, Deserializable, Num)
+
+newtype Message =
+  Message { _messageFields :: (Crc, MagicByte, Attributes, Key, Value) }
+  deriving (Show, Eq, Deserializable)
+
 newtype Crc = Crc Int32 deriving (Show, Eq, Serializable, Deserializable, Num)
 newtype MagicByte = MagicByte Int8 deriving (Show, Eq, Serializable, Deserializable, Num)
 newtype Attributes = Attributes Int8 deriving (Show, Eq, Serializable, Deserializable, Num)
-newtype Key = Key MaybeKafkaBytes deriving (Show, Eq, Serializable, Deserializable)
-newtype Value = Value { _valueBytes :: MaybeKafkaBytes } deriving (Show, Eq, Serializable, Deserializable)
 
-newtype MaybeKafkaBytes = MKB { _maybeKafkaBytes :: Maybe KafkaBytes } deriving (Show, Eq)
+newtype Key = Key { _keyBytes :: Maybe KafkaBytes } deriving (Show, Eq)
+newtype Value = Value { _valueBytes :: Maybe KafkaBytes } deriving (Show, Eq)
 
 data ResponseMessage = MetadataResponse MetadataResponse
                      | ProduceResponse ProduceResponse
@@ -250,9 +273,13 @@ instance Serializable Int32 where serialize = putWord32be . fromIntegral
 instance Serializable Int16 where serialize = putWord16be . fromIntegral
 instance Serializable Int8  where serialize = putWord8    . fromIntegral
 
-instance Serializable MaybeKafkaBytes where
-  serialize (MKB (Just kbs)) = serialize kbs
-  serialize (MKB Nothing) = serialize (-1 :: Int32)
+instance Serializable Key where
+  serialize (Key (Just bs)) = serialize bs
+  serialize (Key Nothing)   = serialize (-1 :: Int32)
+
+instance Serializable Value where
+  serialize (Value (Just bs)) = serialize bs
+  serialize (Value Nothing)   = serialize (-1 :: Int32)
 
 instance Serializable KafkaString where
   serialize (KString bs) = do
@@ -338,14 +365,23 @@ instance Deserializable KafkaString where
     bs <- getByteString $ fromIntegral l
     return $ KString bs
 
-instance Deserializable MaybeKafkaBytes where
+instance Deserializable Key where
   deserialize = do
     l <- deserialize :: Get Int32
     case l of
-      -1 -> return $ MKB Nothing
+      -1 -> return (Key Nothing)
       _ -> do
         bs <- getByteString $ fromIntegral l
-        return $ MKB (Just (KBytes bs))
+        return $ Key (Just (KBytes bs))
+
+instance Deserializable Value where
+  deserialize = do
+    l <- deserialize :: Get Int32
+    case l of
+      -1 -> return (Value Nothing)
+      _ -> do
+        bs <- getByteString $ fromIntegral l
+        return $ Value (Just (KBytes bs))
 
 instance (Deserializable a) => Deserializable [a] where
   deserialize = do
@@ -400,9 +436,9 @@ makeLenses ''MessageSetMember
 makeLenses ''Offset
 
 makeLenses ''Message
-makeLenses ''Value
 
-makeLenses ''MaybeKafkaBytes
+makeLenses ''Key
+makeLenses ''Value
 
 makePrisms ''ResponseMessage
 
@@ -457,7 +493,7 @@ messageValue :: Lens' Message Value
 messageValue = messageFields . _5
 
 payload :: Fold Message ByteString
-payload = messageValue . valueBytes . maybeKafkaBytes . folded . kafkaByteString
+payload = messageValue . valueBytes . folded . kafkaByteString
 
 offsetResponseOffset :: Partition -> Fold OffsetResponse Offset
 offsetResponseOffset p = offsetResponseFields . folded . _2 . folded . partitionOffsetsFields . keyed p . _3 . folded
@@ -466,7 +502,7 @@ messageSet :: Partition -> TopicName -> Fold FetchResponse MessageSetMember
 messageSet p t = fetchResponseByTopic t . messageSetByPartition p
 
 nextOffset :: Lens' MessageSetMember Offset
-nextOffset = offset . adding 1
+nextOffset = setOffset . adding 1
 
 findPartitionMetadata :: Applicative f => TopicName -> LensLike' f TopicMetadata [PartitionMetadata]
 findPartitionMetadata t = filtered (view $ topicMetadataName . to (== t)) . partitionsMetadata
