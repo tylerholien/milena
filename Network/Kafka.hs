@@ -163,8 +163,7 @@ doRequest r = mapStateT (bimapEitherT KafkaDeserializationError id) $ do
     rawLength <- B.hGet h 4
     return $ runGet (liftM fromIntegral getWord32be) rawLength
   resp <- liftIO $ B.hGet h dataLength
-  a <- lift . hoistEither $ runGet (getResponse dataLength) resp
-  return a
+  lift . hoistEither $ runGet (getResponse dataLength) resp
 
 -- | Send a metadata request
 metadata :: MetadataRequest -> Kafka MetadataResponse
@@ -221,7 +220,7 @@ defaultMessageMagicByte = 0
 
 -- | Default: @Nothing@
 defaultMessageKey :: Key
-defaultMessageKey = Key $ Nothing
+defaultMessageKey = Key Nothing
 
 -- | Default: @0@
 defaultMessageAttributes :: Attributes
@@ -259,7 +258,7 @@ fetchMessages fr = (fr ^.. fetchResponseFields . folded) >>= tam
 
 -- | Execute a produce request and get the raw preduce response.
 produce :: ProduceRequest -> Kafka ProduceResponse
-produce request = do
+produce request =
     makeRequest (ProduceRequest request) >>= doRequest >>= expectResponse ExpectedProduce _ProduceResponse
 
 -- | Construct a produce request with explicit arguments.

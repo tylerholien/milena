@@ -169,7 +169,7 @@ newtype Metadata = Metadata KafkaString deriving (Show, Eq, Serializable, Deseri
 
 errorKafka :: KafkaError -> Int16
 errorKafka NoError                             = 0
-errorKafka Unknown                             = (-1)
+errorKafka Unknown                             = -1
 errorKafka OffsetOutOfRange                    = 1
 errorKafka InvalidMessage                      = 2
 errorKafka UnknownTopicOrPartition             = 3
@@ -350,7 +350,7 @@ instance Deserializable MessageSetMember where
 instance Deserializable Leader where
   deserialize = do
     x <- deserialize :: Get Int32
-    let l = if x == -1 then Leader Nothing else Leader $ Just x
+    let l = Leader $ if x == -1 then Nothing else Just x
     return l
 
 instance Deserializable KafkaBytes where
