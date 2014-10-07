@@ -1,19 +1,23 @@
-{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE Rank2Types #-}
 
 module Network.Kafka.Protocol where
 
-import Data.Int
-import Data.ByteString.Char8 (ByteString)
-import qualified Data.ByteString.Char8 as B
-import Data.Serialize.Put
-import Data.Serialize.Get
-import Prelude hiding ((.), id)
+import Control.Applicative (Applicative(..), Alternative(..), (<$>), (<*>))
 import Control.Category (Category(..))
+import Control.Lens
 import Control.Monad (replicateM, liftM, liftM2, liftM3, liftM4, liftM5)
-import Control.Applicative (Alternative(..))
-import GHC.Exts(IsString(..))
+import Data.ByteString.Char8 (ByteString)
 import Data.Digest.CRC32
+import Data.Int
+import Data.Serialize.Get
+import Data.Serialize.Put
+import GHC.Exts (IsString(..))
+import Numeric.Lens
+import Prelude hiding ((.), id)
+import qualified Data.ByteString.Char8 as B
 
 class Serializable a where
   serialize :: a -> Put
@@ -21,22 +25,10 @@ class Serializable a where
 class Deserializable a where
   deserialize :: Get a
 
-newtype Response = Response (CorrelationId, ResponseMessage) deriving (Show, Eq)
+data Response = Response { _responseCorrelationId :: CorrelationId, _responseMessage :: ResponseMessage } deriving (Show, Eq)
 
 getResponse :: Int -> Get Response
-getResponse l = do
-  correlationId <- deserialize
-  rm <- getResponseMessage (l - 4)
-  return $ Response (correlationId, rm)
-
-data ResponseMessage = MetadataResponse MetadataResponse
-                     | ProduceResponse ProduceResponse
-                     | FetchResponse FetchResponse
-                     | OffsetResponse OffsetResponse
-                     | OffsetCommitResponse OffsetCommitResponse
-                     | OffsetFetchResponse OffsetFetchResponse
-                     | ConsumerMetadataResponse ConsumerMetadataResponse
-                     deriving (Show, Eq)
+getResponse l = Response <$> deserialize <*> getResponseMessage (l - 4)
 
 newtype ConsumerMetadataResponse = ConsumerMetadataResp (KafkaError, Broker) deriving (Show, Eq, Deserializable) -- CoordinatorId CoordinatorHost CoordinatorPort
 -- newtype ErrorCode = ErrorCode int16
@@ -66,7 +58,7 @@ getResponseMessage l = liftM MetadataResponse          (isolate l deserialize)
 
 newtype ApiKey = ApiKey Int16 deriving (Show, Eq, Deserializable, Serializable, Num) -- numeric ID for API (i.e. metadata req, produce req, etc.)
 newtype ApiVersion = ApiVersion Int16 deriving (Show, Eq, Deserializable, Serializable, Num)
-newtype CorrelationId = CorrelationId Int32 deriving (Show, Eq, Deserializable, Serializable, Num)
+newtype CorrelationId = CorrelationId Int32 deriving (Show, Eq, Deserializable, Serializable, Num, Enum)
 newtype ClientId = ClientId KafkaString deriving (Show, Eq, Deserializable, Serializable, IsString)
 
 data RequestMessage = MetadataRequest MetadataRequest
@@ -79,26 +71,26 @@ data RequestMessage = MetadataRequest MetadataRequest
                     deriving (Show, Eq)
 
 newtype MetadataRequest = MetadataReq [TopicName] deriving (Show, Eq, Serializable, Deserializable)
-newtype TopicName = TName KafkaString deriving (Show, Eq, Deserializable, Serializable, IsString)
+newtype TopicName = TName { _tName :: KafkaString } deriving (Show, Eq, Ord, Deserializable, Serializable, IsString)
 
-newtype KafkaBytes = KBytes ByteString deriving (Show, Eq, IsString)
-newtype KafkaString = KString ByteString deriving (Show, Eq, IsString)
+newtype KafkaBytes = KBytes { _kafkaByteString :: ByteString } deriving (Show, Eq, IsString)
+newtype KafkaString = KString { _kString :: ByteString } deriving (Show, Eq, Ord, IsString)
 
-newtype ProduceResponse = ProduceResp [(TopicName, [(Partition, KafkaError, Offset)])] deriving (Show, Eq, Deserializable, Serializable)
+newtype ProduceResponse = ProduceResp { _produceResponseFields :: [(TopicName, [(Partition, KafkaError, Offset)])] } deriving (Show, Eq, Deserializable, Serializable)
 
-newtype OffsetResponse = OffsetResp [(TopicName, [PartitionOffsets])] deriving (Show, Eq, Deserializable)
-newtype PartitionOffsets = PartitionOffsets (Partition, KafkaError, [Offset]) deriving (Show, Eq, Deserializable)
+newtype OffsetResponse = OffsetResp { _offsetResponseFields :: [(TopicName, [PartitionOffsets])] } deriving (Show, Eq, Deserializable)
+newtype PartitionOffsets = PartitionOffsets { _partitionOffsetsFields :: (Partition, KafkaError, [Offset]) } deriving (Show, Eq, Deserializable)
 
-newtype FetchResponse = FetchResp [(TopicName, [(Partition, KafkaError, Offset, MessageSet)])] deriving (Show, Eq, Serializable, Deserializable)
+newtype FetchResponse = FetchResp { _fetchResponseFields :: [(TopicName, [(Partition, KafkaError, Offset, MessageSet)])] } deriving (Show, Eq, Serializable, Deserializable)
 
-newtype MetadataResponse = MetadataResp ([Broker], [TopicMetadata]) deriving (Show, Eq, Deserializable)
-newtype Broker = Broker (NodeId, Host, Port) deriving (Show, Eq, Deserializable)
-newtype NodeId = NodeId Int32 deriving (Show, Eq, Deserializable, Num)
-newtype Host = Host KafkaString deriving (Show, Eq, Deserializable, IsString)
-newtype Port = Port Int32 deriving (Show, Eq, Deserializable, Num)
-newtype TopicMetadata = TopicMetadata (KafkaError, TopicName, [PartitionMetadata]) deriving (Show, Eq, Deserializable)
-newtype PartitionMetadata = PartitionMetadata (KafkaError, Partition, Leader, Replicas, Isr) deriving (Show, Eq, Deserializable)
-newtype Leader = Leader (Maybe Int32) deriving (Show, Eq)
+newtype MetadataResponse = MetadataResp { _metadataResponseFields :: ([Broker], [TopicMetadata]) } deriving (Show, Eq, Deserializable)
+newtype Broker = Broker { _brokerFields :: (NodeId, Host, Port) } deriving (Show, Eq, Deserializable)
+newtype NodeId = NodeId { _nodeId :: Int32 } deriving (Show, Eq, Deserializable, Num)
+newtype Host = Host { _hostString :: KafkaString } deriving (Show, Eq, Deserializable, IsString)
+newtype Port = Port { _portInt :: Int32 } deriving (Show, Eq, Deserializable, Num)
+newtype TopicMetadata = TopicMetadata { _topicMetadataFields :: (KafkaError, TopicName, [PartitionMetadata]) } deriving (Show, Eq, Deserializable)
+newtype PartitionMetadata = PartitionMetadata { _partitionMetadataFields :: (KafkaError, Partition, Leader, Replicas, Isr) } deriving (Show, Eq, Deserializable)
+newtype Leader = Leader { _leaderId :: Maybe Int32 } deriving (Show, Eq, Ord)
 
 newtype Replicas = Replicas [Int32] deriving (Show, Eq, Serializable, Deserializable)
 newtype Isr = Isr [Int32] deriving (Show, Eq, Deserializable)
@@ -107,7 +99,7 @@ newtype OffsetCommitResponse = OffsetCommitResp [(TopicName, [(Partition, KafkaE
 newtype OffsetFetchResponse = OffsetFetchResp [(TopicName, [(Partition, Offset, Metadata, KafkaError)])] deriving (Show, Eq, Deserializable)
 
 newtype OffsetRequest = OffsetReq (ReplicaId, [(TopicName, [(Partition, Time, MaxNumberOfOffsets)])]) deriving (Show, Eq, Serializable)
-newtype Time = Time Int64 deriving (Show, Eq, Serializable, Num, Bounded)
+newtype Time = Time { _timeInt :: Int64 } deriving (Show, Eq, Serializable, Num, Bounded)
 newtype MaxNumberOfOffsets = MaxNumberOfOffsets Int32 deriving (Show, Eq, Serializable, Num)
 
 newtype FetchRequest = FetchReq (ReplicaId, MaxWaitTime, MinBytes, [(TopicName, [(Partition, Offset, MaxBytes)])]) deriving (Show, Eq, Deserializable, Serializable)
@@ -121,20 +113,29 @@ newtype ProduceRequest = ProduceReq (RequiredAcks, Timeout, [(TopicName, [(Parti
 
 newtype RequiredAcks = RequiredAcks Int16 deriving (Show, Eq, Serializable, Deserializable, Num)
 newtype Timeout = Timeout Int32 deriving (Show, Eq, Serializable, Deserializable, Num)
-newtype Partition = Partition Int32 deriving (Show, Eq, Serializable, Deserializable, Num)
+newtype Partition = Partition { _partitionInt :: Int32 } deriving (Show, Eq, Ord, Serializable, Deserializable, Num)
 
-newtype MessageSet = MessageSet [MessageSetMember] deriving (Show, Eq)
-newtype MessageSetMember = MessageSetMember (Offset, Message) deriving (Show, Eq)
-newtype Offset = Offset Int64 deriving (Show, Eq, Serializable, Deserializable, Num)
+newtype MessageSet = MessageSet { _messageSetMembers :: [MessageSetMember] } deriving (Show, Eq)
+data MessageSetMember = MessageSetMember { _offset :: Offset, _message :: Message } deriving (Show, Eq)
+newtype Offset = Offset { _offsetInt :: Int64 } deriving (Show, Eq, Serializable, Deserializable, Num)
 
-newtype Message = Message (Crc, MagicByte, Attributes, Key, Value) deriving (Show, Eq, Deserializable)
+newtype Message = Message { _messageFields :: (Crc, MagicByte, Attributes, Key, Value) } deriving (Show, Eq, Deserializable)
 newtype Crc = Crc Int32 deriving (Show, Eq, Serializable, Deserializable, Num)
 newtype MagicByte = MagicByte Int8 deriving (Show, Eq, Serializable, Deserializable, Num)
 newtype Attributes = Attributes Int8 deriving (Show, Eq, Serializable, Deserializable, Num)
 newtype Key = Key MaybeKafkaBytes deriving (Show, Eq, Serializable, Deserializable)
-newtype Value = Value MaybeKafkaBytes deriving (Show, Eq, Serializable, Deserializable)
+newtype Value = Value { _valueBytes :: MaybeKafkaBytes } deriving (Show, Eq, Serializable, Deserializable)
 
-newtype MaybeKafkaBytes = MKB (Maybe KafkaBytes) deriving (Show, Eq)
+newtype MaybeKafkaBytes = MKB { _maybeKafkaBytes :: Maybe KafkaBytes } deriving (Show, Eq)
+
+data ResponseMessage = MetadataResponse MetadataResponse
+                     | ProduceResponse ProduceResponse
+                     | FetchResponse FetchResponse
+                     | OffsetResponse OffsetResponse
+                     | OffsetCommitResponse OffsetCommitResponse
+                     | OffsetFetchResponse OffsetFetchResponse
+                     | ConsumerMetadataResponse ConsumerMetadataResponse
+                     deriving (Show, Eq)
 
 newtype ConsumerMetadataRequest = ConsumerMetadataReq ConsumerGroup deriving (Show, Eq, Serializable)
 
@@ -162,23 +163,23 @@ errorKafka OffsetsLoadInProgressCode           = 14
 errorKafka ConsumerCoordinatorNotAvailableCode = 15
 errorKafka NotCoordinatorForConsumerCode       = 16
 
-data KafkaError = NoError -- 0 No error--it worked!
-                | Unknown -- -1 An unexpected server error
-                | OffsetOutOfRange -- 1 The requested offset is outside the range of offsets maintained by the server for the given topic/partition.
-                | InvalidMessage -- 2 This indicates that a message contents does not match its CRC
-                | UnknownTopicOrPartition -- 3 This request is for a topic or partition that does not exist on this broker.
-                | InvalidMessageSize -- 4 The message has a negative size
-                | LeaderNotAvailable -- 5 This error is thrown if we are in the middle of a leadership election and there is currently no leader for this partition and hence it is unavailable for writes.
-                | NotLeaderForPartition -- 6 This error is thrown if the client attempts to send messages to a replica that is not the leader for some partition. It indicates that the clients metadata is out of date.
-                | RequestTimedOut -- 7 This error is thrown if the request exceeds the user-specified time limit in the request.
-                | BrokerNotAvailable -- 8 This is not a client facing error and is used mostly by tools when a broker is not alive.
-                | ReplicaNotAvailable -- 9 If replica is expected on a broker, but is not.
-                | MessageSizeTooLarge -- 10 The server has a configurable maximum message size to avoid unbounded memory allocation. This error is thrown if the client attempt to produce a message larger than this maximum.
-                | StaleControllerEpochCode -- 11 Internal error code for broker-to-broker communication.
-                | OffsetMetadataTooLargeCode -- 12 If you specify a string larger than configured maximum for offset metadata
-                | OffsetsLoadInProgressCode -- 14 The broker returns this error code for an offset fetch request if it is still loading offsets (after a leader change for that offsets topic partition).
-                | ConsumerCoordinatorNotAvailableCode -- 15 The broker returns this error code for consumer metadata requests or offset commit requests if the offsets topic has not yet been created.
-                | NotCoordinatorForConsumerCode -- 16 The broker returns this error code if it receives an offset fetch or commit request for a consumer group that it is not a coordinator for.
+data KafkaError = NoError -- ^ @0@ No error--it worked!
+                | Unknown -- ^ @-1@ An unexpected server error
+                | OffsetOutOfRange -- ^ @1@ The requested offset is outside the range of offsets maintained by the server for the given topic/partition.
+                | InvalidMessage -- ^ @2@ This indicates that a message contents does not match its CRC
+                | UnknownTopicOrPartition -- ^ @3@ This request is for a topic or partition that does not exist on this broker.
+                | InvalidMessageSize -- ^ @4@ The message has a negative size
+                | LeaderNotAvailable -- ^ @5@ This error is thrown if we are in the middle of a leadership election and there is currently no leader for this partition and hence it is unavailable for writes.
+                | NotLeaderForPartition -- ^ @6@ This error is thrown if the client attempts to send messages to a replica that is not the leader for some partition. It indicates that the clients metadata is out of date.
+                | RequestTimedOut -- ^ @7@ This error is thrown if the request exceeds the user-specified time limit in the request.
+                | BrokerNotAvailable -- ^ @8@ This is not a client facing error and is used mostly by tools when a broker is not alive.
+                | ReplicaNotAvailable -- ^ @9@ If replica is expected on a broker, but is not.
+                | MessageSizeTooLarge -- ^ @10@ The server has a configurable maximum message size to avoid unbounded memory allocation. This error is thrown if the client attempt to produce a message larger than this maximum.
+                | StaleControllerEpochCode -- ^ @11@ Internal error code for broker-to-broker communication.
+                | OffsetMetadataTooLargeCode -- ^ @12@ If you specify a string larger than configured maximum for offset metadata
+                | OffsetsLoadInProgressCode -- ^ @14@ The broker returns this error code for an offset fetch request if it is still loading offsets (after a leader change for that offsets topic partition).
+                | ConsumerCoordinatorNotAvailableCode -- ^ @15@ The broker returns this error code for consumer metadata requests or offset commit requests if the offsets topic has not yet been created.
+                | NotCoordinatorForConsumerCode -- ^ @16@ The broker returns this error code if it receives an offset fetch or commit request for a consumer group that it is not a coordinator for.
                 deriving (Eq, Show)
 
 instance Serializable KafkaError where
@@ -273,7 +274,7 @@ instance Serializable KafkaBytes where
     putByteString bs
 
 instance Serializable MessageSetMember where
-  serialize (MessageSetMember (offset, msg)) = do
+  serialize (MessageSetMember offset msg) = do
     serialize offset
     serialize msize
     serialize msg
@@ -317,7 +318,7 @@ instance Deserializable MessageSetMember where
     o <- deserialize
     l <- deserialize :: Get Int32
     m <- isolate (fromIntegral l) deserialize
-    return $ MessageSetMember (o, m)
+    return $ MessageSetMember o m
 
 instance Deserializable Leader where
   deserialize = do
@@ -342,7 +343,7 @@ instance Deserializable MaybeKafkaBytes where
     l <- deserialize :: Get Int32
     case l of
       -1 -> return $ MKB Nothing
-      _ -> do 
+      _ -> do
         bs <- getByteString $ fromIntegral l
         return $ MKB (Just (KBytes bs))
 
@@ -364,3 +365,111 @@ instance Deserializable Int64 where deserialize = liftM fromIntegral getWord64be
 instance Deserializable Int32 where deserialize = liftM fromIntegral getWord32be
 instance Deserializable Int16 where deserialize = liftM fromIntegral getWord16be
 instance Deserializable Int8  where deserialize = liftM fromIntegral getWord8
+
+-- * Generated lenses
+
+makeLenses ''Response
+
+makeLenses ''TopicName
+
+makeLenses ''KafkaBytes
+makeLenses ''KafkaString
+
+makeLenses ''ProduceResponse
+
+makeLenses ''OffsetResponse
+makeLenses ''PartitionOffsets
+
+makeLenses ''FetchResponse
+
+makeLenses ''MetadataResponse
+makeLenses ''Broker
+makeLenses ''NodeId
+makeLenses ''Host
+makeLenses ''Port
+makeLenses ''TopicMetadata
+makeLenses ''PartitionMetadata
+makeLenses ''Leader
+
+makeLenses ''Time
+
+makeLenses ''Partition
+
+makeLenses ''MessageSet
+makeLenses ''MessageSetMember
+makeLenses ''Offset
+
+makeLenses ''Message
+makeLenses ''Value
+
+makeLenses ''MaybeKafkaBytes
+
+makePrisms ''ResponseMessage
+
+-- * Composed lenses
+
+keyed :: (Field1 a a b b, Choice p, Applicative f, Eq b) => b -> Optic' p f a a
+keyed k = filtered (view $ _1 . to (== k))
+
+metadataResponseBrokers :: Lens' MetadataResponse [Broker]
+metadataResponseBrokers = metadataResponseFields . _1
+
+topicsMetadata :: Lens' MetadataResponse [TopicMetadata]
+topicsMetadata = metadataResponseFields . _2
+
+topicMetadataKafkaError :: Lens' TopicMetadata KafkaError
+topicMetadataKafkaError = topicMetadataFields . _1
+
+topicMetadataName :: Lens' TopicMetadata TopicName
+topicMetadataName = topicMetadataFields . _2
+
+partitionsMetadata :: Lens' TopicMetadata [PartitionMetadata]
+partitionsMetadata = topicMetadataFields . _3
+
+partitionId :: Lens' PartitionMetadata Partition
+partitionId = partitionMetadataFields . _2
+
+partitionMetadataLeader :: Lens' PartitionMetadata Leader
+partitionMetadataLeader = partitionMetadataFields . _3
+
+brokerNode :: Lens' Broker NodeId
+brokerNode = brokerFields . _1
+
+brokerHost :: Lens' Broker Host
+brokerHost = brokerFields . _2
+
+brokerPort :: Lens' Broker Port
+brokerPort = brokerFields . _3
+
+fetchResponseMessages :: Fold FetchResponse MessageSet
+fetchResponseMessages = fetchResponseFields . folded . _2 . folded . _4
+
+fetchResponseByTopic :: TopicName -> Fold FetchResponse (Partition, KafkaError, Offset, MessageSet)
+fetchResponseByTopic t = fetchResponseFields . folded . keyed t . _2 . folded
+
+messageSetByPartition :: Partition -> Fold (Partition, KafkaError, Offset, MessageSet) MessageSetMember
+messageSetByPartition p = keyed p . _4 . messageSetMembers . folded
+
+fetchResponseMessageMembers :: Fold FetchResponse MessageSetMember
+fetchResponseMessageMembers = fetchResponseMessages . messageSetMembers . folded
+
+messageValue :: Lens' Message Value
+messageValue = messageFields . _5
+
+payload :: Fold Message ByteString
+payload = messageValue . valueBytes . maybeKafkaBytes . folded . kafkaByteString
+
+offsetResponseOffset :: Partition -> Fold OffsetResponse Offset
+offsetResponseOffset p = offsetResponseFields . folded . _2 . folded . partitionOffsetsFields . keyed p . _3 . folded
+
+messageSet :: Partition -> TopicName -> Fold FetchResponse MessageSetMember
+messageSet p t = fetchResponseByTopic t . messageSetByPartition p
+
+nextOffset :: Lens' MessageSetMember Offset
+nextOffset = offset . adding 1
+
+findPartitionMetadata :: Applicative f => TopicName -> LensLike' f TopicMetadata [PartitionMetadata]
+findPartitionMetadata t = filtered (view $ topicMetadataName . to (== t)) . partitionsMetadata
+
+findPartition :: Partition -> Prism' PartitionMetadata PartitionMetadata
+findPartition p = filtered (view $ partitionId . to (== p))

@@ -1,296 +1,306 @@
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE TupleSections #-}
-{-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE TemplateHaskell #-}
 
 module Network.Kafka where
 
-import Control.Concurrent.Chan
-import Control.Concurrent (forkIO)
-import Control.Exception (bracket)
-import Control.Monad (liftM, forever, replicateM)
+import Control.Lens
+import Control.Applicative
+import Control.Monad (liftM)
+import Control.Monad.Trans (liftIO, lift)
+import Control.Monad.Trans.Either
+import Control.Monad.Trans.State
 import Data.ByteString.Char8 (ByteString)
-import qualified Data.ByteString.Char8 as B
+import Data.ByteString.Lens
+import System.Random (getStdRandom, randomR)
+import Data.Monoid ((<>))
 import Data.Serialize.Get
-import Data.Int
-import Data.List (find, groupBy, sortBy)
-import Data.Maybe (mapMaybe)
-import Network
 import System.IO
+import qualified Data.ByteString.Char8 as B
+import qualified Data.Map as M
+import qualified Network
 
 import Network.Kafka.Protocol
 
-{-
-
-Warning: none of this should actually be used in any way. This is basically a
-scratch pad/dumping ground to try stuff out to make sure it worked against a
-running Kafka instance. There are some usage examples in here, but they
-certainly aren't easy to read. I'll work on extracting the valuable examples
-into something useful.
-
--}
-
-withConnection :: (Handle -> IO c) -> IO c
-withConnection = withConnection' ("localhost", 9092)
-
-withConnection' :: (HostName, PortNumber) -> (Handle -> IO c) -> IO c
-withConnection' (host, port) = bracket (connectTo host $ PortNumber port) hClose
-
-produceLots :: ByteString -> [ByteString] -> Handle -> IO [Either String Response]
-produceLots t ms h = mapM go ms
-  where
-    go m = do
-      let r = client $ produceRequest 0 t Nothing m
-      -- threadDelay 200000
-      req r h
-
-produceLots' :: ByteString -> [ByteString] -> Handle -> IO ()
-produceLots' t ms h = mapM_ go ms
-  where
-    go m = do
-      let r = client $ produceRequest 0 t Nothing m
-      -- threadDelay 200000
-      req r h
-
-producer :: (HostName, PortNumber) -> ByteString -> [ByteString] -> IO (Either String Response)
-producer seed topic ms = do
-  resp <- withConnection' seed $ req $ client $ metadataRequest [topic]
-  leader <- case resp of
-    Left s -> error s
-    Right (Response (_, (MetadataResponse mr))) -> case leaderFor topic mr of
-      Nothing -> error "uh, there should probably be a leader..."
-      Just leader -> return leader
-    _ -> error "omg!"
-  -- let r = client . produceRequest 0 topic Nothing
-      -- go m = threadDelay 200000 >> req . (r m)
-  withConnection' leader $ req $ client $ produceRequests 0 topic ms
-
-producer' :: (HostName, PortNumber) -> ByteString -> [ByteString] -> IO [Either String Response]
-producer' seed topic ms = do
-  resp <- withConnection' seed $ req $ client $ metadataRequest [topic]
-  leader <- case resp of
-    Left s -> error s
-    Right (Response (_, (MetadataResponse mr))) -> case leaderFor topic mr of
-      Nothing -> error "uh, there should probably be a leader..."
-      Just leader -> return leader
-    _ -> error "omg!"
-  -- let r = client . produceRequest 0 topic Nothing
-      -- go m = threadDelay 200000 >> req . (r m)
-  withConnection' leader $ produceLots topic ms
-
-producer'' :: (HostName, PortNumber) -> ByteString -> [ByteString] -> IO ()
-producer'' seed topic ms = do
-  resp <- withConnection' seed $ req $ client $ metadataRequest [topic]
-  leader <- case resp of
-    Left s -> error s
-    Right (Response (_, (MetadataResponse mr))) -> case leaderFor topic mr of
-      Nothing -> error "uh, there should probably be a leader..."
-      Just leader -> return leader
-    _ -> error "omg!"
-  -- let r = client . produceRequest 0 topic Nothing
-      -- go m = threadDelay 200000 >> req . (r m)
-  withConnection' leader $ produceLots' topic ms
-
-produceStuff :: (HostName, PortNumber) -> ByteString -> [ByteString] -> IO [Either String Response]
-produceStuff seed topic ms = do
-  resp <- withConnection' seed $ req $ client $ metadataRequest [topic]
-  -- pattern matches here aren't exhaustive
-  -- do we need to return an error if it's not a Metadata response?
-  leaders <- case resp of
-    Left s -> error s
-    Right (Response (_, (MetadataResponse mr))) -> return $ leadersFor topic mr
-  chans <- replicateM (length leaders) newChan
-  outChan <- newChan
-  -- what's this doing?
-  -- let actions = map (\(p, leader) -> (p, withConnection' leader)) leaders
-  --     actions' = zip chans actions
-  mapM_ (\ (chan, (p, (host, port))) -> forkIO $ do
-    h <- connectTo host $ PortNumber port
-    forever (readChan chan >>= ((flip req) h . client . produceRequests p topic) >>= writeChan outChan)) (zip chans leaders)
-
-  -- this could use splitting out w/ explicit type. What is it comparing?
-  let mss = map (\xs -> map snd xs) $ groupBy (\ (x,_) (y,_) -> x == y) $ sortBy (\ (x,_) (y,_) -> x `compare` y) $ zip (cycle [1..5]) ms
-
-  mapM_ (\ (chan, ms') -> writeChan chan ms') (zip (cycle chans) mss)
-  replicateM (length mss) (readChan outChan)
-
--- |As long as the supplied "Maybe" expression returns "Just _", the loop
--- body will be called and passed the value contained in the 'Just'.  Results
--- are discarded.
-whileJust_ :: (Monad m) => m (Maybe a) -> (a -> m b) -> m ()
-whileJust_ p f = go
-    where go = do
-            x <- p
-            case x of
-                Nothing -> return ()
-                Just w  -> do
-                  _ <- f w
-                  go
-
-chanReq :: Chan (Maybe a) -> Chan b -> (a -> IO b) -> IO ()
-chanReq cIn cOut f = do whileJust_ (readChan cIn) $ \msg -> f msg >>= writeChan cOut
-
-transformChan :: (a -> IO b) -> Chan (Maybe a) -> IO (Chan b)
-transformChan f cIn = do
-  cOut <- newChan
-  _ <- forkIO $ whileJust_ (readChan cIn) $ \msg -> f msg >>= writeChan cOut
-  return cOut
-
--- leadersFor :: ByteString -> MetadataResponse -> [(Partition, (String, PortNumber))]
-leadersFor :: Num a => ByteString -> MetadataResponse -> [(a, (String, PortNumber))]
-leadersFor topicName (MetadataResp (bs, ts)) =
-  let bs' = map (\(Broker (NodeId x, (Host (KString h)), (Port p))) -> (x, (B.unpack h, fromIntegral p))) bs
-      isTopic (TopicMetadata (e, TName (KString tname),_)) =
-        tname == topicName && e == NoError
-  in case find isTopic ts of
-    (Just (TopicMetadata (_, _, ps))) ->
-      mapMaybe (\(PartitionMetadata (pErr, Partition pid, Leader (Just leaderId), _, _)) ->
-        (if pErr == NoError then lookup leaderId bs' else Nothing) >>= \x -> return (fromIntegral pid, x)) ps
-    Nothing -> []
-
-leaderFor :: ByteString -> MetadataResponse -> Maybe (String, PortNumber)
-leaderFor topicName (MetadataResp (bs, ts)) = do
-  let bs' = map (\(Broker (NodeId x, (Host (KString h)), (Port p))) -> (x, (B.unpack h, fromIntegral p))) bs
-      isTopic (TopicMetadata (_, TName (KString tname),_)) = tname == topicName
-      isPartition (PartitionMetadata (_, Partition x, _, _, _)) = x == 0
-  (TopicMetadata (_, _, ps)) <- find isTopic ts
-  -- null op
-  -- if tErr /= NoError then Nothing else Just tErr
-  (PartitionMetadata (_, _, Leader (Just leaderId), _, _)) <- find isPartition ps
-  -- null op?
-  -- if pErr /= NoError then Nothing else Just tErr
-  lookup leaderId bs'
-
--- Response (CorrelationId 0,MetadataResponse (MetadataResp (
--- [Broker (NodeId 1,Host (KString "192.168.33.1"),Port 9093),Broker (NodeId 0,Host (KString "192.168.33.1"),Port 9092),Broker (NodeId 2,Host (KString "192.168.33.1"),Port 9094)],
--- [TopicMetadata (
---   ErrorCode 0,
---   TName (KString "replicated"),
---   [PartitionMetadata (
---     ErrorCode 0,
---     Partition 0,
---     Leader (Just 1),
---     Replicas [1,0,2],
---     Isr [1,0])])])))
-
--- Response (CorrelationId 0,ProduceResponse (ProduceResp [(TName (KString "replicated"),[(Partition 0,ErrorCode 6,Offset (-1))])]))
-
-req :: Request -> Handle -> IO (Either String Response)
-req r h = do
-  let bytes = requestBytes r
-  B.hPut h bytes
-  hFlush h
-  let reader = B.hGet h
-  rawLength <- reader 4
-  let (Right dataLength) = runGet (liftM fromIntegral getWord32be) rawLength
-  resp <- reader dataLength
-  return $ runGet (getResponse dataLength) resp
-
-reqbs :: Request -> Handle -> IO ByteString
-reqbs r h = do
-  let bytes = requestBytes r
-  B.hPut h bytes
-  hFlush h
-  let reader = B.hGet h
-  rawLength <- reader 4
-  let (Right dataLength) = runGet (liftM fromIntegral getWord32be) rawLength
-  resp <- reader dataLength
-  return resp
-
-{-
-  The rest of the file used to live in the Protocol module. Most of it is
-  scratchpad stuff to make all the newtypes easier to work with in GHCi. In
-  the interest of making the Protocol module easier to understand, I just
-  shoved them all in here for now.
--}
-
-client :: RequestMessage -> Request
-client = request "milena"
-
-request :: KafkaString -> RequestMessage -> Request
-request clientId m = Request (CorrelationId 0, ClientId clientId, m)
-
-metadata :: MetadataResponse -> [(TopicName, [(Partition, Broker)])]
-metadata (MetadataResp (bs, ts)) = omg ts
-  where
-    broker nodeId = lookup nodeId $ map (\ b@(Broker (NodeId x, _, _)) -> (x, b)) bs
-    withoutErrors = mapMaybe $ \t@(TopicMetadata (_, n, ps)) -> if hasError t then Just (n, ps) else Nothing
-    pbs (PartitionMetadata (_, p, Leader l, _, _)) = l >>= broker >>= return . (p,)
-    omg = map (\ (name, ps) -> (name, mapMaybe pbs ps)) . withoutErrors
-
-message :: Message -> Maybe ByteString
-message (Message (_, _, _, _, Value (MKB (Just (KBytes bs))))) = Just bs
-message (Message (_, _, _, _, Value (MKB Nothing))) = Nothing
-
-class HasError a where
-  hasError :: a -> Bool
-
-instance HasError TopicMetadata where hasError (TopicMetadata (e, _, _)) = e /= NoError
-instance HasError PartitionMetadata where hasError (PartitionMetadata (e, _, _, _, _)) = e /= NoError
-
-ocr :: ConsumerGroup -> Offset -> RequestMessage
-ocr g offset = OffsetCommitRequest $ OffsetCommitReq (g, [("test", [(0, offset, -1, "SO META!")])])
-
-ofr :: ConsumerGroup -> RequestMessage
-ofr g = OffsetFetchRequest $ OffsetFetchReq (g, [("test", [0])])
-
-cmr :: ConsumerGroup -> RequestMessage
-cmr g = ConsumerMetadataRequest $ ConsumerMetadataReq g
-
--- jgr g = JoinGroupRequest $ JoinGroupReq (g, Timeout 10000, ["join-group-test"], ConsumerId "", PartitionAssignmentStrategy "strategy1")
-
-offsetRequest :: RequestMessage
-offsetRequest = OffsetRequest $ OffsetReq (-1, [("test", [(0, -1, 100)])])
-offsetRequest' :: RequestMessage
-offsetRequest' = OffsetRequest $ OffsetReq (-1, [("test", [(0, -2, 100)])])
-offsetRequest'' :: RequestMessage
-offsetRequest'' = OffsetRequest $ OffsetReq (-1, [("test", [(0, maxBound, 100)])])
-
-fetchRequest :: RequestMessage
-fetchRequest = FetchRequest $ FetchReq (ReplicaId (-1), MaxWaitTime 15000, MinBytes 1, [(TName (KString "test"), [(Partition 0, Offset 104, MaxBytes 10000)]), (TName (KString "example"), [(Partition 0, Offset 4, MaxBytes 10000)])])
-
-data OffsetParam = Earliest
-                 | Latest
-                 | OffsetN Offset
-                 deriving (Show)
-
-data FetchOpts = FetchOpts { maxWait :: Int32
-                           , minBytes :: Int32
-                           , maxBytes :: Int32}
-
-defaultFetchOpts :: FetchOpts
-defaultFetchOpts = FetchOpts { maxWait = 100 -- milliseconds
-                             , minBytes = 1
-                             , maxBytes = 1048576 -- 1MB
+data KafkaState = KafkaState { -- | Name to use as a client ID.
+                               _stateName :: KafkaString
+                               -- | An incrementing counter of requests.
+                             , _stateCorrelationId :: CorrelationId
+                               -- | How many acknowledgements are required for producing.
+                             , _stateRequiredAcks :: RequiredAcks
+                               -- | Time in milliseconds to wait for messages to be produced by broker.
+                             , _stateRequestTimeout :: Timeout
+                               -- | Minimum size of response bytes to block for.
+                             , _stateWaitSize :: MinBytes
+                               -- | Maximum size of response bytes to retrieve.
+                             , _stateBufferSize :: MaxBytes
+                               -- | Maximum time in milliseconds to wait for response.
+                             , _stateWaitTime :: MaxWaitTime
                              }
 
-fr :: FetchOpts -> [(ByteString, Int32, Int64)] -> RequestMessage
-fr (FetchOpts {maxWait, minBytes, maxBytes}) xs =
-  FetchRequest $ FetchReq (ReplicaId (-1), MaxWaitTime maxWait, MinBytes minBytes, ts)
-    where ts = map (\ (t, p, o) -> (TName (KString t), [(Partition p, Offset o, MaxBytes maxBytes)])) xs
+makeLenses ''KafkaState
 
--- OPTION_DEFAULTS = {
---   :compression_codec => nil,
---   :compressed_topics => nil,
---   :metadata_refresh_interval_ms => 600_000,
---   :partitioner => nil,
---   :max_send_retries => 3,
---   :retry_backoff_ms => 100,
---   :required_acks => 0,
---   :ack_timeout_ms => 1500,
--- }
+data KafkaConsumer = KafkaConsumer { _consumerState :: KafkaState
+                                   , _consumerHandle :: Handle
+                                   }
 
+makeLenses ''KafkaConsumer
 
--- produceRequest :: Key -> Value -> RequestMessage
--- produceRequest k v = ProduceRequest $ ProduceReq (1, 10000, [("test", [(0, [MessageSetMember (0, (Message (1, 0, 0, k, v)))])])])
+-- | The core Kafka monad.
+type Kafka = StateT KafkaConsumer (EitherT KafkaClientError IO)
 
-produceRequest :: Int32 -> ByteString -> Maybe KafkaBytes -> ByteString -> RequestMessage
-produceRequest p topic k m = ProduceRequest $ ProduceReq (1, 10000, [((TName (KString topic)), [(Partition p, MessageSet [MessageSetMember (0, (Message (1, 0, 0, (Key (MKB k)), (Value (MKB (Just (KBytes m)))))))])])])
--- RequiredAcks 1,Timeout 10000,[(TName (KString "test"),[(Partition 0,
---   MessageSet [MessageSetMember (Offset 0,Message (Crc 1,MagicByte 0,Attributes 0,Key (MKB Nothing),Value (MKB (Just (KBytes "hi")))))])])]
+type KafkaAddress = (Host, Port)
+type KafkaClientId = KafkaString
 
-produceRequests :: Int32 -> ByteString -> [ByteString] -> RequestMessage
-produceRequests p topic ms = ProduceRequest $ ProduceReq (1, 10000, [((TName (KString topic)), [(Partition p, MessageSet ms')])])
-  where ms' = map (\m -> MessageSetMember (0, (Message (1, 0, 0, (Key (MKB Nothing)), (Value (MKB (Just (KBytes m)))))))) ms
+-- | Errors given from the Kafka monad.
+data KafkaClientError = -- | A response did not contain an offset.
+                        KafkaNoOffset
+                        -- | Got a different form of a response than was requested.
+                      | KafkaExpected KafkaExpectedResponse
+                        -- | A value could not be deserialized correctly.
+                      | KafkaDeserializationError String -- TODO: cereal is Stringly typed, should use tickle
+                        deriving (Eq, Show)
 
-metadataRequest :: [ByteString] -> RequestMessage
-metadataRequest ts = MetadataRequest $ MetadataReq $ map (TName . KString) ts
+-- | Type of response to expect, used for 'KafkaExpected' error.
+data KafkaExpectedResponse = ExpectedMetadata
+                           | ExpectedFetch
+                           | ExpectedProduce
+                             deriving (Eq, Show)
+
+-- | An abstract form of Kafka's time. Used for querying offsets.
+data KafkaTime = -- | The latest time on the broker.
+                 LatestTime
+                 -- | The earliest time on the broker.
+               | EarliestTime
+                 -- | A specific time.
+               | OtherTime Time
+
+data PartitionAndLeader = PartitionAndLeader { _palTopic :: TopicName
+                                             , _palPartition :: Partition
+                                             , _palLeader :: Leader
+                                             }
+
+makeLenses ''PartitionAndLeader
+
+data TopicAndPartition = TopicAndPartition { _tapTopic :: TopicName
+                                           , _tapPartition :: Partition
+                                           }
+                         deriving (Eq, Ord, Show)
+
+-- | A topic with a serializable message.
+data TopicAndMessage = TopicAndMessage { _tamTopic :: TopicName
+                                       , _tamMessage :: Message
+                                       }
+                       deriving (Eq, Show)
+
+makeLenses ''TopicAndMessage
+
+-- | Get the bytes from the Kafka message, ignoring the topic.
+tamPayload :: TopicAndMessage -> ByteString
+tamPayload = foldOf (tamMessage . payload)
+
+-- * Configuration
+
+-- | Default: @0@
+defaultCorrelationId :: CorrelationId
+defaultCorrelationId = 0
+
+-- | Default: @1@
+defaultRequiredAcks :: RequiredAcks
+defaultRequiredAcks = 1
+
+-- | Default: @10000@
+defaultRequestTimeout :: Timeout
+defaultRequestTimeout = 10000
+
+-- | Default: @0@
+defaultMinBytes :: MinBytes
+defaultMinBytes = MinBytes 0
+
+-- | Default: @1024 * 1024@
+defaultMaxBytes :: MaxBytes
+defaultMaxBytes = 1024 * 1024
+
+-- | Default: @0@
+defaultMaxWaitTime :: MaxWaitTime
+defaultMaxWaitTime = 0
+
+-- | Create a consumer using default values.
+defaultState :: KafkaClientId -> KafkaState
+defaultState cid =
+    KafkaState cid
+               defaultCorrelationId
+               defaultRequiredAcks
+               defaultRequestTimeout
+               defaultMinBytes
+               defaultMaxBytes
+               defaultMaxWaitTime
+
+-- | Run the underlying Kafka monad at the given leader address and initial state.
+runKafka :: KafkaAddress -> KafkaState -> Kafka a -> IO (Either KafkaClientError a)
+runKafka (h, p) s k = do
+  handle <- Network.connectTo h' p'
+  r <- runEitherT . evalStateT k $ KafkaConsumer s handle
+  hClose handle
+  return r
+      where h' = h ^. hostString . kString . unpackedChars
+            p' = p ^. portInt . to fromIntegral . to Network.PortNumber
+
+-- | Make a request, incrementing the `_stateCorrelationId`.
+makeRequest :: RequestMessage -> Kafka Request
+makeRequest m = do
+  corid <- use (consumerState . stateCorrelationId)
+  consumerState . stateCorrelationId += 1
+  conid <- use (consumerState . stateName)
+  return $ Request (corid, ClientId conid, m)
+
+-- | Perform a request and deserialize the response.
+doRequest :: Request -> Kafka Response
+doRequest r = mapStateT (bimapEitherT KafkaDeserializationError id) $ do
+  h <- use consumerHandle
+  dataLength <- lift . EitherT $ do
+    B.hPut h $ requestBytes r
+    hFlush h
+    rawLength <- B.hGet h 4
+    return $ runGet (liftM fromIntegral getWord32be) rawLength
+  resp <- liftIO $ B.hGet h dataLength
+  a <- lift . hoistEither $ runGet (getResponse dataLength) resp
+  return a
+
+-- | Send a metadata request
+metadata :: MetadataRequest -> Kafka MetadataResponse
+metadata request =
+    makeRequest (MetadataRequest request) >>= doRequest >>= expectResponse ExpectedMetadata _MetadataResponse
+
+-- | Function to give an error when the response seems wrong.
+expectResponse :: KafkaExpectedResponse -> Getting (Leftmost b) ResponseMessage b -> Response -> Kafka b
+expectResponse e p = lift . maybe (left $ KafkaExpected e) return . firstOf (responseMessage . p)
+
+-- | Convert an abstract time to a serializable protocol value.
+protocolTime :: KafkaTime -> Time
+protocolTime LatestTime = Time (-1)
+protocolTime EarliestTime = Time (-2)
+protocolTime (OtherTime o) = o
+
+-- * Messages
+
+-- | Group messages together with the leader they should be sent to.
+partitionAndCollate :: [TopicAndMessage] -> Kafka (M.Map Leader (M.Map TopicAndPartition [TopicAndMessage]))
+partitionAndCollate ks = f ks M.empty
+      where f [] c = return c
+            f (x:xs) a = do
+              topicPartitionsList <- brokerPartitionInfo $ _tamTopic x
+              pal <- liftIO $ getPartition topicPartitionsList
+              let l = maybe (Leader Nothing) _palLeader pal
+                  tp = TopicAndPartition <$> pal ^? folded . palTopic <*> pal ^? folded . palPartition
+                  b = M.singleton l (maybe M.empty (`M.singleton` [x]) tp)
+                  c = M.unionWith (M.unionWith (<>)) a b
+              f xs c
+            getPartition ps =
+                let ps' = ps ^.. folded . filtered (has $ palLeader . leaderId . _Just)
+                in (ps' ^?) . element <$> getStdRandom (randomR (0, length ps' - 1))
+
+-- | Create a protocol message set from a list of messages.
+groupMessagesToSet :: [TopicAndMessage] -> MessageSet
+groupMessagesToSet xs = MessageSet $ uncurry msm <$> zip [0..] xs
+    where msm n = MessageSetMember (Offset n) . _tamMessage
+
+-- | Find a leader and partition for the topic.
+brokerPartitionInfo :: TopicName -> Kafka [PartitionAndLeader]
+brokerPartitionInfo t = do
+  md <- metadata $ MetadataReq [t]
+  return $ pal <$> md ^.. topicsMetadata . folded . partitionsMetadata . folded
+      where pal d = PartitionAndLeader t (d ^. partitionId) (d ^. partitionMetadataLeader)
+
+-- | Default: @1@
+defaultMessageCrc :: Crc
+defaultMessageCrc = 1
+
+-- | Default: @0@
+defaultMessageMagicByte :: MagicByte
+defaultMessageMagicByte = 0
+
+-- | Default: @Nothing@
+defaultMessageKey :: Key
+defaultMessageKey = Key $ MKB Nothing
+
+-- | Default: @0@
+defaultMessageAttributes :: Attributes
+defaultMessageAttributes = 0
+
+-- | Construct a message from a string of bytes using default attributes.
+makeMessage :: ByteString -> Message
+makeMessage m = Message (defaultMessageCrc, defaultMessageMagicByte, defaultMessageAttributes, defaultMessageKey, Value (MKB (Just (KBytes m))))
+
+-- * Fetching
+
+-- | Default: @-1@
+ordinaryConsumerId :: ReplicaId
+ordinaryConsumerId = ReplicaId (-1)
+
+-- | Construct a fetch request from the values in the state.
+fetchRequest :: Offset -> Partition -> TopicName -> Kafka FetchRequest
+fetchRequest o p topic = do
+  wt <- use (consumerState . stateWaitTime)
+  ws <- use (consumerState . stateWaitSize)
+  bs <- use (consumerState . stateBufferSize)
+  return $ FetchReq (ordinaryConsumerId, wt, ws, [(topic, [(p, o, bs)])])
+
+-- | Execute a fetch request and get the raw fetch response.
+fetch :: FetchRequest -> Kafka FetchResponse
+fetch request =
+    makeRequest (FetchRequest request) >>= doRequest >>= expectResponse ExpectedFetch _FetchResponse
+
+-- | Extract out messages with their topics from a fetch response.
+fetchMessages :: FetchResponse -> [TopicAndMessage]
+fetchMessages fr = (fr ^.. fetchResponseFields . folded) >>= tam
+    where tam a = TopicAndMessage (a ^. _1) <$> a ^.. _2 . folded . _4 . messageSetMembers . folded . message
+
+-- * Producing
+
+-- | Execute a produce request and get the raw preduce response.
+produce :: ProduceRequest -> Kafka ProduceResponse
+produce request = do
+    makeRequest (ProduceRequest request) >>= doRequest >>= expectResponse ExpectedProduce _ProduceResponse
+
+-- | Construct a produce request with explicit arguments.
+produceRequest :: RequiredAcks -> Timeout -> [(TopicAndPartition, MessageSet)] -> ProduceRequest
+produceRequest ra ti ts =
+    ProduceReq (ra, ti, M.toList . M.unionsWith (<>) $ fmap f ts)
+        where f (TopicAndPartition t p, i) = M.singleton t [(p, i)]
+
+-- | Send messages to partition calculated by 'partitionAndCollate'.
+produceMessages :: [TopicAndMessage] -> Kafka [ProduceResponse]
+produceMessages tams = do
+  m <- fmap (fmap groupMessagesToSet) <$> partitionAndCollate tams
+  -- TODO: Use the leaders
+  mapM send $ M.toList <$> M.elems m
+
+-- | Execute a produce request using the values in the state.
+send :: [(TopicAndPartition, MessageSet)] -> Kafka ProduceResponse
+send ts = do
+  requiredAcks <- use (consumerState . stateRequiredAcks)
+  requestTimeout <- use (consumerState . stateRequestTimeout)
+  produce $ produceRequest requiredAcks requestTimeout ts
+
+-- * Offsets
+
+-- | Fields to construct an offset request, per topic and partition.
+data PartitionOffsetRequestInfo =
+    PartitionOffsetRequestInfo { -- | Time to find an offset for.
+                                 _kafkaTime :: KafkaTime
+                                 -- | Number of offsets to retrieve.
+                               , _maxNumOffsets :: MaxNumberOfOffsets
+                               }
+
+-- TODO: Properly look up the offset via the partition.
+-- | Get the first found offset.
+getLastOffset :: KafkaTime -> Partition -> TopicName -> Kafka Offset
+getLastOffset m p t =
+    makeRequest (offsetRequest [(TopicAndPartition t p, PartitionOffsetRequestInfo m 1)]) >>= doRequest >>= maybe (StateT . const $ left KafkaNoOffset) return . firstOf (responseMessage . _OffsetResponse . offsetResponseOffset p)
+
+-- | Create an offset request.
+offsetRequest :: [(TopicAndPartition, PartitionOffsetRequestInfo)] -> RequestMessage
+offsetRequest ts =
+    OffsetRequest $ OffsetReq (ReplicaId (-1), M.toList . M.unionsWith (<>) $ fmap f ts)
+        where f (TopicAndPartition t p, i) = M.singleton t [g p i]
+              g p (PartitionOffsetRequestInfo kt mno) = (p, protocolTime kt, mno)
