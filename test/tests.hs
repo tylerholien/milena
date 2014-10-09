@@ -1,176 +1,35 @@
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE TupleSections #-}
-{-# LANGUAGE NamedFieldPuns #-}
 
 module Main where
 
-import Control.Monad (liftM)
-import qualified Data.ByteString.Char8 as B
-import Data.Serialize.Get
-import Network
-import System.IO
+import Data.Functor
+import Data.Either (isRight)
+import Network.Kafka
 import Test.Hspec
-
--- import Network.Kafka
-import Network.Kafka.Protocol
-
-{-
-
-Requests for a topic-partition combo need to go to the broker that "owns" that
-topic-partition. Normally, you'd fetch metadata about topics you're interested
-in and get back a list of brokers and a list of partitions and which broker
-"owns" which partition. For simplicity's sake, we only have a single Kafka node
-and a single partition, so we'll ignore all of that here.
-
-Start Kafka and add a topic called "test-topic" with a single partition (see
-http://kafka.apache.org/documentation.html#quickstart):
-
-./bin/zookeeper-server-start.sh config/zookeeper.properties
-./bin/kafka-server-start.sh config/server.properties
-./bin/kafka-topics.sh --create --zookeeper localhost:2181 --replication-factor 1 --partitions 1 --topic test-topic
-
-**************************************************
-
-GHCi usage:
-
-:set -XOverloadedStrings
-:l Network/Examples.hs
-
-(produceResponse, fetchResponse) <- responses
-
--- error example:
--- if you've set up the topic "test-topic" above, should get back two
--- UnknownTopicOrPartition errors and one NoError error
-h <- connectTo "localhost" $ PortNumber 9092
-req (request "milena-examples" produceRequestErr) h
-
--- metadata requests are really simple!
-let mr = MetadataRequest $ MetadataReq $ [(TName (KString "test-topic"))]
-req (request "milena-examples" mr) h
-
--- it's what we do with the response that is a bit more complex... :-)
-
--}
-
-responses :: IO (Either String Response, Either String Response)
-responses = do
-  h <- connectTo "localhost" $ PortNumber 9092
-  let pr = request "milena-examples" produceRequest
-      fr = request "milena-examples" fetchRequest
-  produceResponse <- req pr h
-  fetchResponse <- req fr h
-  _ <- hClose h
-  return (produceResponse, fetchResponse)
-
--- https://cwiki.apache.org/confluence/display/KAFKA/A+Guide+To+The+Kafka+Protocol#AGuideToTheKafkaProtocol-Requests
-request :: KafkaString -> RequestMessage -> Request
-request clientId m = Request ( CorrelationId 0
-                             , ClientId clientId
-                             , m
-                             )
-
-produceRequest :: RequestMessage
-produceRequest =
-  let topicName = TName (KString "test-topic")
-      messageSet = MessageSet [messageSetMember]
-      offset = Offset 0 -- ignored when producer is sending to the broker
-      messageSetMember = MessageSetMember (offset, m)
-      -- check out the protocol doc for info about messages and message sets:
-      -- https://cwiki.apache.org/confluence/display/KAFKA/A+Guide+To+The+Kafka+Protocol#AGuideToTheKafkaProtocol-Messagesets
-      m = Message ( Crc 1 -- CRC32 gets computed during serialization
-                  , MagicByte 0
-                  , Attributes 0
-                  , Key Nothing
-                  , Value (Just (KBytes "raw message bytes"))
-                  )
-  -- RequiredAcks requires special attention - see the doc:
-  -- https://cwiki.apache.org/confluence/display/KAFKA/A+Guide+To+The+Kafka+Protocol#AGuideToTheKafkaProtocol-ProduceAPI
-  in ProduceRequest $ ProduceReq ( RequiredAcks 1
-                                 , Timeout 10000
-                                 , [(topicName, [(Partition 0, messageSet)])]
-                                 )
-
--- https://cwiki.apache.org/confluence/display/KAFKA/A+Guide+To+The+Kafka+Protocol#AGuideToTheKafkaProtocol-FetchAPI
-fetchRequest :: RequestMessage
-fetchRequest =
-  let topicName = TName (KString "test-topic")
-  in FetchRequest $ FetchReq ( ReplicaId (-1) -- "client consumers should always specify this as -1"
-                             , MaxWaitTime 15000
-                             , MinBytes 1
-                             , [(topicName, [( Partition 0
-                                             , Offset 0
-                                             , MaxBytes 10000)])])
-
-req :: Request -> Handle -> IO (Either String Response)
-req r h = do
-  let bytes = requestBytes r
-  B.hPut h bytes
-  hFlush h
-  let reader = B.hGet h
-  rawLength <- reader 4
-  case runGet (liftM fromIntegral getWord32be) rawLength of
-    Right dataLength -> do
-      resp <- reader dataLength
-      return $ runGet (getResponse dataLength) resp
-    Left s -> return $ Left s
-
-produceRequestErr :: RequestMessage
-produceRequestErr =
-  let topicName = TName (KString "test-topic")
-      invalidTopicName = TName (KString "topic-that-does-not-exist")
-      messageSet = MessageSet [messageSetMember]
-      -- ignored when producer is sending to the broker
-      offset = Offset 0
-      messageSetMember = MessageSetMember (offset, m)
-      -- check out the protocol doc for info about messages and message sets:
-      -- https://cwiki.apache.org/confluence/display/KAFKA/A+Guide+To+The+Kafka+Protocol#AGuideToTheKafkaProtocol-Messagesets
-      m = Message ( Crc 1 -- CRC32 gets computed during serialization
-                  , MagicByte 0
-                  , Attributes 0
-                  , Key Nothing
-                  , Value (Just (KBytes "raw message bytes"))
-                  )
-  in ProduceRequest $ ProduceReq
-     ( RequiredAcks 1
-     , Timeout 10000
-     
-     , [ (topicName, [
-             -- this one's just fine and is processed by the server
-             (Partition 0, messageSet),
-             -- same topic, but partition doesn't exist
-             (Partition 1, messageSet)])
-         -- topic name doesn't exist
-       , (invalidTopicName, [(Partition 0, messageSet)])] 
-       -- NOTE: normally the message set would be
-       -- different for each topic-partition, but
-       -- this is just an example :-)
-     )
-
-frUnp (FetchResponse (FetchResp ls)) = ls
-quadUnp (_, _, _, ms) = ms
-msUnp (MessageSet members) = members
-msmUnp (MessageSetMember (_, msg)) = msg
-msgUnp (Message (_, _, _, _, v)) = v
-vUnp (Value bs) = bs
-
-getBinary :: Response -> Maybe KafkaBytes
-getBinary (Response (_, fr)) = nextItem
-  where ls = frUnp fr
-        fstItem = head . snd . head $ ls
-        nextItem = vUnp (msgUnp (msmUnp (head (msUnp (quadUnp fstItem)))))
-getBinary _ = Nothing
-
-eGetBinary :: Either a Response -> Maybe KafkaBytes
-eGetBinary = either (const Nothing) getBinary
-
-expectedBytes :: Maybe KafkaBytes
-expectedBytes = Just (KBytes "raw message bytes")
+import Test.Hspec.QuickCheck
+import qualified Data.ByteString.Char8 as B
 
 main :: IO ()
 main = hspec $ do
+  let topic = "milena-test"
+      run = runKafka ("localhost", 9092) $ defaultState "milena-test-client"
+      byteMessages = fmap (TopicAndMessage topic . makeMessage . B.pack)
 
   describe "can talk to local Kafka server" $ do
-    it "roundtrips producer -> consumer" $ do
-      (_, fetchResponse) <- responses
-      let actualBytes = eGetBinary fetchResponse
-      expectedBytes `shouldBe` actualBytes
+    prop "can produce messages" $ \ms -> do
+      result <- run . produceMessages $ byteMessages ms
+      result `shouldSatisfy` isRight
+
+    prop "can fetch messages" $ do
+      result <- run $ do
+        offset <- getLastOffset EarliestTime 0 topic
+        fetch =<< fetchRequest offset 0 topic
+      result `shouldSatisfy` isRight
+
+    prop "can roundtrip messages" $ \ms -> do
+      let messages = byteMessages ms
+      result <- run $ do
+        offset <- getLastOffset LatestTime 0 topic
+        void $ send [(TopicAndPartition topic 0, groupMessagesToSet messages)]
+        fmap tamPayload . fetchMessages <$> (fetch =<< fetchRequest offset 0 topic)
+      result `shouldBe` Right (tamPayload <$> messages)
