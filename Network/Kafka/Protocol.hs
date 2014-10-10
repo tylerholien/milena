@@ -10,6 +10,7 @@ import Control.Category (Category(..))
 import Control.Lens
 import Control.Monad (replicateM, liftM, liftM2, liftM3, liftM4, liftM5)
 import Data.ByteString.Char8 (ByteString)
+import Data.ByteString.Lens (unpackedChars)
 import Data.Digest.CRC32
 import Data.Int
 import Data.Serialize.Get
@@ -18,6 +19,7 @@ import GHC.Exts (IsString(..))
 import Numeric.Lens
 import Prelude hiding ((.), id)
 import qualified Data.ByteString.Char8 as B
+import qualified Network
 
 class Serializable a where
   serialize :: a -> Put
@@ -94,8 +96,8 @@ newtype FetchResponse =
 
 newtype MetadataResponse = MetadataResp { _metadataResponseFields :: ([Broker], [TopicMetadata]) } deriving (Show, Eq, Deserializable)
 newtype Broker = Broker { _brokerFields :: (NodeId, Host, Port) } deriving (Show, Eq, Deserializable)
-newtype NodeId = NodeId { _nodeId :: Int32 } deriving (Show, Eq, Deserializable, Num)
-newtype Host = Host { _hostString :: KafkaString } deriving (Show, Eq, Deserializable, IsString)
+newtype NodeId = NodeId { _nodeId :: Int32 } deriving (Show, Eq, Ord, Deserializable, Num)
+newtype Host = Host { _hostKString :: KafkaString } deriving (Show, Eq, Deserializable, IsString)
 newtype Port = Port { _portInt :: Int32 } deriving (Show, Eq, Deserializable, Num)
 newtype TopicMetadata = TopicMetadata { _topicMetadataFields :: (KafkaError, TopicName, [PartitionMetadata]) } deriving (Show, Eq, Deserializable)
 newtype PartitionMetadata = PartitionMetadata { _partitionMetadataFields :: (KafkaError, Partition, Leader, Replicas, Isr) } deriving (Show, Eq, Deserializable)
@@ -509,3 +511,9 @@ findPartitionMetadata t = filtered (view $ topicMetadataName . to (== t)) . part
 
 findPartition :: Partition -> Prism' PartitionMetadata PartitionMetadata
 findPartition p = filtered (view $ partitionId . to (== p))
+
+hostString :: Lens' Host String
+hostString = hostKString . kString . unpackedChars
+
+portId :: IndexPreservingGetter Port Network.PortID
+portId = portInt . to fromIntegral . to Network.PortNumber
