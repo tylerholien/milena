@@ -5,6 +5,7 @@ module Main where
 import Data.Functor
 import Data.Either (isRight)
 import Network.Kafka
+import Network.Kafka.Protocol (Leader(..))
 import Test.Hspec
 import Test.Hspec.QuickCheck
 import qualified Data.ByteString.Char8 as B
@@ -29,7 +30,9 @@ main = hspec $ do
     prop "can roundtrip messages" $ \ms -> do
       let messages = byteMessages ms
       result <- run $ do
+        info <- brokerPartitionInfo topic
+        leader <- maybe (Leader Nothing) _palLeader <$> getPartition info
         offset <- getLastOffset LatestTime 0 topic
-        void $ send [(TopicAndPartition topic 0, groupMessagesToSet messages)]
+        void $ send leader [(TopicAndPartition topic 0, groupMessagesToSet messages)]
         fmap tamPayload . fetchMessages <$> (fetch =<< fetchRequest offset 0 topic)
       result `shouldBe` Right (tamPayload <$> messages)

@@ -3,18 +3,18 @@
 
 module Network.Kafka where
 
-import Control.Lens
 import Control.Applicative
+import Control.Exception (bracket)
+import Control.Lens
 import Control.Monad (liftM)
 import Control.Monad.Trans (liftIO, lift)
 import Control.Monad.Trans.Either
 import Control.Monad.Trans.State
 import Data.ByteString.Char8 (ByteString)
-import Data.ByteString.Lens
-import System.Random (getStdRandom, randomR)
 import Data.Monoid ((<>))
 import Data.Serialize.Get
 import System.IO
+import System.Random (getStdRandom, randomR)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.Map as M
 import qualified Network
@@ -35,6 +35,8 @@ data KafkaState = KafkaState { -- | Name to use as a client ID.
                              , _stateBufferSize :: MaxBytes
                                -- | Maximum time in milliseconds to wait for response.
                              , _stateWaitTime :: MaxWaitTime
+                               -- | Broker cache
+                             , _stateBrokers :: M.Map Leader Broker
                              }
 
 makeLenses ''KafkaState
@@ -58,6 +60,8 @@ data KafkaClientError = -- | A response did not contain an offset.
                       | KafkaExpected KafkaExpectedResponse
                         -- | A value could not be deserialized correctly.
                       | KafkaDeserializationError String -- TODO: cereal is Stringly typed, should use tickle
+                        -- | Could not find a cached broker for the found leader.
+                      | KafkaInvalidBroker Leader
                         deriving (Eq, Show)
 
 -- | Type of response to expect, used for 'KafkaExpected' error.
@@ -134,16 +138,12 @@ defaultState cid =
                defaultMinBytes
                defaultMaxBytes
                defaultMaxWaitTime
+               M.empty
 
 -- | Run the underlying Kafka monad at the given leader address and initial state.
 runKafka :: KafkaAddress -> KafkaState -> Kafka a -> IO (Either KafkaClientError a)
-runKafka (h, p) s k = do
-  handle <- Network.connectTo h' p'
-  r <- runEitherT . evalStateT k $ KafkaConsumer s handle
-  hClose handle
-  return r
-      where h' = h ^. hostString . kString . unpackedChars
-            p' = p ^. portInt . to fromIntegral . to Network.PortNumber
+runKafka (h, p) s k =
+    bracket (Network.connectTo (h ^. hostString) (p ^. portId)) hClose $ runEitherT . evalStateT k . KafkaConsumer s
 
 -- | Make a request, incrementing the `_stateCorrelationId`.
 makeRequest :: RequestMessage -> Kafka Request
@@ -184,19 +184,21 @@ protocolTime (OtherTime o) = o
 
 -- | Group messages together with the leader they should be sent to.
 partitionAndCollate :: [TopicAndMessage] -> Kafka (M.Map Leader (M.Map TopicAndPartition [TopicAndMessage]))
-partitionAndCollate ks = f ks M.empty
-      where f [] c = return c
-            f (x:xs) a = do
+partitionAndCollate ks = recurse ks M.empty
+      where recurse [] accum = return accum
+            recurse (x:xs) accum = do
               topicPartitionsList <- brokerPartitionInfo $ _tamTopic x
-              pal <- liftIO $ getPartition topicPartitionsList
-              let l = maybe (Leader Nothing) _palLeader pal
+              pal <- getPartition topicPartitionsList
+              let leader = maybe (Leader Nothing) _palLeader pal
                   tp = TopicAndPartition <$> pal ^? folded . palTopic <*> pal ^? folded . palPartition
-                  b = M.singleton l (maybe M.empty (`M.singleton` [x]) tp)
-                  c = M.unionWith (M.unionWith (<>)) a b
-              f xs c
-            getPartition ps =
-                let ps' = ps ^.. folded . filtered (has $ palLeader . leaderId . _Just)
-                in (ps' ^?) . element <$> getStdRandom (randomR (0, length ps' - 1))
+                  b = M.singleton leader $ maybe M.empty (`M.singleton` [x]) tp
+                  accum' = M.unionWith (M.unionWith (<>)) accum b
+              recurse xs accum'
+
+getPartition :: [PartitionAndLeader] -> Kafka (Maybe PartitionAndLeader)
+getPartition ps =
+    liftIO $ (ps' ^?) . element <$> getStdRandom (randomR (0, length ps' - 1))
+        where ps' = ps ^.. folded . filtered (has $ palLeader . leaderId . _Just)
 
 -- | Create a protocol message set from a list of messages.
 groupMessagesToSet :: [TopicAndMessage] -> MessageSet
@@ -207,8 +209,11 @@ groupMessagesToSet xs = MessageSet $ uncurry msm <$> zip [0..] xs
 brokerPartitionInfo :: TopicName -> Kafka [PartitionAndLeader]
 brokerPartitionInfo t = do
   md <- metadata $ MetadataReq [t]
+  let brokers = md ^.. metadataResponseFields . _1 . folded
+  consumerState . stateBrokers .= foldr addBroker M.empty brokers
   return $ pal <$> md ^.. topicsMetadata . folded . partitionsMetadata . folded
       where pal d = PartitionAndLeader t (d ^. partitionId) (d ^. partitionMetadataLeader)
+            addBroker b = M.insert (Leader . Just $ b ^. brokerFields . _1 . nodeId) b
 
 -- | Default: @1@
 defaultMessageCrc :: Crc
@@ -271,15 +276,20 @@ produceRequest ra ti ts =
 produceMessages :: [TopicAndMessage] -> Kafka [ProduceResponse]
 produceMessages tams = do
   m <- fmap (fmap groupMessagesToSet) <$> partitionAndCollate tams
-  -- TODO: Use the leaders
-  mapM send $ M.toList <$> M.elems m
+  mapM (uncurry send) $ fmap M.toList <$> M.toList m
 
 -- | Execute a produce request using the values in the state.
-send :: [(TopicAndPartition, MessageSet)] -> Kafka ProduceResponse
-send ts = do
+send :: Leader -> [(TopicAndPartition, MessageSet)] -> Kafka ProduceResponse
+send l ts = do
+  foundBroker <- use (consumerState . stateBrokers . at l)
+  broker <- lift $ maybe (left $ KafkaInvalidBroker l) right foundBroker
   requiredAcks <- use (consumerState . stateRequiredAcks)
   requestTimeout <- use (consumerState . stateRequestTimeout)
-  produce $ produceRequest requiredAcks requestTimeout ts
+  let h' = broker ^. brokerFields . _2
+      p' = broker ^. brokerFields . _3
+  cstate <- use consumerState
+  r <- liftIO . runKafka (h', p') cstate . produce $ produceRequest requiredAcks requestTimeout ts
+  lift $ either left right r
 
 -- * Offsets
 
