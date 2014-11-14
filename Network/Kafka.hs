@@ -210,11 +210,11 @@ groupMessagesToSet xs = MessageSet $ msm <$> xs
 brokerPartitionInfo :: TopicName -> Kafka [PartitionAndLeader]
 brokerPartitionInfo t = do
   md <- metadata $ MetadataReq [t]
-  let brokers = md ^.. metadataResponseFields . _1 . folded
+  let brokers = md ^.. metadataResponseBrokers . folded
   consumerState . stateBrokers .= foldr addBroker M.empty brokers
   return $ pal <$> md ^.. topicsMetadata . folded . partitionsMetadata . folded
       where pal d = PartitionAndLeader t (d ^. partitionId) (d ^. partitionMetadataLeader)
-            addBroker b = M.insert (Leader . Just $ b ^. brokerFields . _1 . nodeId) b
+            addBroker b = M.insert (Leader . Just $ b ^. brokerNode . nodeId) b
 
 -- | Default: @1@
 defaultMessageCrc :: Crc
@@ -286,8 +286,8 @@ send l ts = do
   broker <- lift $ maybe (left $ KafkaInvalidBroker l) right foundBroker
   requiredAcks <- use (consumerState . stateRequiredAcks)
   requestTimeout <- use (consumerState . stateRequestTimeout)
-  let h' = broker ^. brokerFields . _2
-      p' = broker ^. brokerFields . _3
+  let h' = broker ^. brokerHost
+      p' = broker ^. brokerPort
   cstate <- use consumerState
   r <- liftIO . runKafka (h', p') cstate . produce $ produceRequest requiredAcks requestTimeout ts
   lift $ either left right r
