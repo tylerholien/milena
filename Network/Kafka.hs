@@ -82,6 +82,7 @@ data PartitionAndLeader = PartitionAndLeader { _palTopic :: TopicName
                                              , _palPartition :: Partition
                                              , _palLeader :: Leader
                                              }
+                                             deriving (Show)
 
 makeLenses ''PartitionAndLeader
 
@@ -202,8 +203,8 @@ getPartition ps =
 
 -- | Create a protocol message set from a list of messages.
 groupMessagesToSet :: [TopicAndMessage] -> MessageSet
-groupMessagesToSet xs = MessageSet $ uncurry msm <$> zip [0..] xs
-    where msm n = MessageSetMember (Offset n) . _tamMessage
+groupMessagesToSet xs = MessageSet $ msm <$> xs
+    where msm = MessageSetMember (Offset (-1)) . _tamMessage
 
 -- | Find a leader and partition for the topic.
 brokerPartitionInfo :: TopicName -> Kafka [PartitionAndLeader]
