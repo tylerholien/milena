@@ -41,14 +41,14 @@ data KafkaState = KafkaState { -- | Name to use as a client ID.
 
 makeLenses ''KafkaState
 
-data KafkaConsumer = KafkaConsumer { _consumerState :: KafkaState
-                                   , _consumerHandle :: Handle
-                                   }
+data KafkaClient = KafkaClient { _consumerState :: KafkaState
+                               , _consumerHandle :: Handle
+                               }
 
-makeLenses ''KafkaConsumer
+makeLenses ''KafkaClient
 
 -- | The core Kafka monad.
-type Kafka = StateT KafkaConsumer (EitherT KafkaClientError IO)
+type Kafka = StateT KafkaClient (EitherT KafkaClientError IO)
 
 type KafkaAddress = (Host, Port)
 type KafkaClientId = KafkaString
@@ -144,7 +144,7 @@ defaultState cid =
 -- | Run the underlying Kafka monad at the given leader address and initial state.
 runKafka :: KafkaAddress -> KafkaState -> Kafka a -> IO (Either KafkaClientError a)
 runKafka (h, p) s k =
-    bracket (Network.connectTo (h ^. hostString) (p ^. portId)) hClose $ runEitherT . evalStateT k . KafkaConsumer s
+    bracket (Network.connectTo (h ^. hostString) (p ^. portId)) hClose $ runEitherT . evalStateT k . KafkaClient s
 
 -- | Make a request, incrementing the `_stateCorrelationId`.
 makeRequest :: RequestMessage -> Kafka Request
