@@ -23,8 +23,6 @@ import Network.Kafka.Protocol
 
 data KafkaState = KafkaState { -- | Name to use as a client ID.
                                _stateName :: KafkaString
-                               -- | An incrementing counter of requests.
-                             , _stateCorrelationId :: CorrelationId
                                -- | How many acknowledgements are required for producing.
                              , _stateRequiredAcks :: RequiredAcks
                                -- | Time in milliseconds to wait for messages to be produced by broker.
@@ -35,14 +33,16 @@ data KafkaState = KafkaState { -- | Name to use as a client ID.
                              , _stateBufferSize :: MaxBytes
                                -- | Maximum time in milliseconds to wait for response.
                              , _stateWaitTime :: MaxWaitTime
+                               -- | An incrementing counter of requests.
+                             , _stateCorrelationId :: CorrelationId
                                -- | Broker cache
                              , _stateBrokers :: M.Map Leader Broker
                              }
 
 makeLenses ''KafkaState
 
-data KafkaClient = KafkaClient { _consumerState :: KafkaState
-                               , _consumerHandle :: Handle
+data KafkaClient = KafkaClient { _kafkaClientState :: KafkaState
+                               , _kafkaClientHandle :: Handle
                                }
 
 makeLenses ''KafkaClient
@@ -133,12 +133,12 @@ defaultMaxWaitTime = 0
 defaultState :: KafkaClientId -> KafkaState
 defaultState cid =
     KafkaState cid
-               defaultCorrelationId
                defaultRequiredAcks
                defaultRequestTimeout
                defaultMinBytes
                defaultMaxBytes
                defaultMaxWaitTime
+               defaultCorrelationId
                M.empty
 
 -- | Run the underlying Kafka monad at the given leader address and initial state.
@@ -149,15 +149,19 @@ runKafka (h, p) s k =
 -- | Make a request, incrementing the `_stateCorrelationId`.
 makeRequest :: RequestMessage -> Kafka Request
 makeRequest m = do
-  corid <- use (consumerState . stateCorrelationId)
-  consumerState . stateCorrelationId += 1
-  conid <- use (consumerState . stateName)
+  corid <- use (kafkaClientState . stateCorrelationId)
+  kafkaClientState . stateCorrelationId += 1
+  conid <- use (kafkaClientState . stateName)
   return $ Request (corid, ClientId conid, m)
 
 -- | Perform a request and deserialize the response.
 doRequest :: Request -> Kafka Response
-doRequest r = mapStateT (bimapEitherT KafkaDeserializationError id) $ do
-  h <- use consumerHandle
+doRequest r = do
+  h <- use kafkaClientHandle
+  doRequest' h r
+
+doRequest' :: Handle -> Request -> Kafka Response
+doRequest' h r = mapStateT (bimapEitherT KafkaDeserializationError id) $ do
   dataLength <- lift . EitherT $ do
     B.hPut h $ requestBytes r
     hFlush h
@@ -211,7 +215,7 @@ brokerPartitionInfo :: TopicName -> Kafka [PartitionAndLeader]
 brokerPartitionInfo t = do
   md <- metadata $ MetadataReq [t]
   let brokers = md ^.. metadataResponseBrokers . folded
-  consumerState . stateBrokers .= foldr addBroker M.empty brokers
+  kafkaClientState . stateBrokers .= foldr addBroker M.empty brokers
   return $ pal <$> md ^.. topicsMetadata . folded . partitionsMetadata . folded
       where pal d = PartitionAndLeader t (d ^. partitionId) (d ^. partitionMetadataLeader)
             addBroker b = M.insert (Leader . Just $ b ^. brokerNode . nodeId) b
@@ -245,9 +249,9 @@ ordinaryConsumerId = ReplicaId (-1)
 -- | Construct a fetch request from the values in the state.
 fetchRequest :: Offset -> Partition -> TopicName -> Kafka FetchRequest
 fetchRequest o p topic = do
-  wt <- use (consumerState . stateWaitTime)
-  ws <- use (consumerState . stateWaitSize)
-  bs <- use (consumerState . stateBufferSize)
+  wt <- use (kafkaClientState . stateWaitTime)
+  ws <- use (kafkaClientState . stateWaitSize)
+  bs <- use (kafkaClientState . stateBufferSize)
   return $ FetchReq (ordinaryConsumerId, wt, ws, [(topic, [(p, o, bs)])])
 
 -- | Execute a fetch request and get the raw fetch response.
@@ -282,13 +286,13 @@ produceMessages tams = do
 -- | Execute a produce request using the values in the state.
 send :: Leader -> [(TopicAndPartition, MessageSet)] -> Kafka ProduceResponse
 send l ts = do
-  foundBroker <- use (consumerState . stateBrokers . at l)
+  foundBroker <- use (kafkaClientState . stateBrokers . at l)
   broker <- lift $ maybe (left $ KafkaInvalidBroker l) right foundBroker
-  requiredAcks <- use (consumerState . stateRequiredAcks)
-  requestTimeout <- use (consumerState . stateRequestTimeout)
+  requiredAcks <- use (kafkaClientState . stateRequiredAcks)
+  requestTimeout <- use (kafkaClientState . stateRequestTimeout)
   let h' = broker ^. brokerHost
       p' = broker ^. brokerPort
-  cstate <- use consumerState
+  cstate <- use kafkaClientState
   r <- liftIO . runKafka (h', p') cstate . produce $ produceRequest requiredAcks requestTimeout ts
   lift $ either left right r
 
