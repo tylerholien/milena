@@ -95,10 +95,10 @@ newtype FetchResponse =
   deriving (Show, Eq, Serializable, Deserializable)
 
 newtype MetadataResponse = MetadataResp { _metadataResponseFields :: ([Broker], [TopicMetadata]) } deriving (Show, Eq, Deserializable)
-newtype Broker = Broker { _brokerFields :: (NodeId, Host, Port) } deriving (Show, Eq, Deserializable)
+newtype Broker = Broker { _brokerFields :: (NodeId, Host, Port) } deriving (Show, Eq, Ord, Deserializable)
 newtype NodeId = NodeId { _nodeId :: Int32 } deriving (Show, Eq, Ord, Deserializable, Num)
-newtype Host = Host { _hostKString :: KafkaString } deriving (Show, Eq, Deserializable, IsString)
-newtype Port = Port { _portInt :: Int32 } deriving (Show, Eq, Deserializable, Num)
+newtype Host = Host { _hostKString :: KafkaString } deriving (Show, Eq, Ord, Deserializable, IsString)
+newtype Port = Port { _portInt :: Int32 } deriving (Show, Eq, Ord, Deserializable, Num)
 newtype TopicMetadata = TopicMetadata { _topicMetadataFields :: (KafkaError, TopicName, [PartitionMetadata]) } deriving (Show, Eq, Deserializable)
 newtype PartitionMetadata = PartitionMetadata { _partitionMetadataFields :: (KafkaError, Partition, Leader, Replicas, Isr) } deriving (Show, Eq, Deserializable)
 newtype Leader = Leader { _leaderId :: Maybe Int32 } deriving (Show, Eq, Ord)

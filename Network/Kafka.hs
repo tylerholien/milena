@@ -12,6 +12,7 @@ import Control.Monad.Trans.Either
 import Control.Monad.Trans.State
 import Data.ByteString.Char8 (ByteString)
 import Data.Monoid ((<>))
+import qualified Data.Pool as Pool
 import Data.Serialize.Get
 import System.IO
 import System.Random (getStdRandom, randomR)
@@ -37,6 +38,7 @@ data KafkaState = KafkaState { -- | Name to use as a client ID.
                              , _stateCorrelationId :: CorrelationId
                                -- | Broker cache
                              , _stateBrokers :: M.Map Leader Broker
+                             , _stateConnections :: M.Map Broker (Pool.Pool Handle)
                              }
 
 makeLenses ''KafkaState
@@ -62,6 +64,7 @@ data KafkaClientError = -- | A response did not contain an offset.
                       | KafkaDeserializationError String -- TODO: cereal is Stringly typed, should use tickle
                         -- | Could not find a cached broker for the found leader.
                       | KafkaInvalidBroker Leader
+                      | KafkaToImplement String
                         deriving (Eq, Show)
 
 -- | Type of response to expect, used for 'KafkaExpected' error.
@@ -140,11 +143,12 @@ defaultState cid =
                defaultMaxWaitTime
                defaultCorrelationId
                M.empty
+               M.empty
 
 -- | Run the underlying Kafka monad at the given leader address and initial state.
 runKafka :: KafkaAddress -> KafkaState -> Kafka a -> IO (Either KafkaClientError a)
 runKafka (h, p) s k =
-    bracket (Network.connectTo (h ^. hostString) (p ^. portId)) hClose $ runEitherT . evalStateT k . KafkaClient s
+  bracket (Network.connectTo (h ^. hostString) (p ^. portId)) hClose $ runEitherT . evalStateT k . KafkaClient s
 
 -- | Make a request, incrementing the `_stateCorrelationId`.
 makeRequest :: RequestMessage -> Kafka Request
@@ -267,9 +271,9 @@ fetchMessages fr = (fr ^.. fetchResponseFields . folded) >>= tam
 -- * Producing
 
 -- | Execute a produce request and get the raw preduce response.
-produce :: ProduceRequest -> Kafka ProduceResponse
-produce request =
-    makeRequest (ProduceRequest request) >>= doRequest >>= expectResponse ExpectedProduce _ProduceResponse
+produce :: Handle -> ProduceRequest -> Kafka ProduceResponse
+produce handle request =
+    makeRequest (ProduceRequest request) >>= doRequest' handle >>= expectResponse ExpectedProduce _ProduceResponse
 
 -- | Construct a produce request with explicit arguments.
 produceRequest :: RequiredAcks -> Timeout -> [(TopicAndPartition, MessageSet)] -> ProduceRequest
@@ -290,11 +294,28 @@ send l ts = do
   broker <- lift $ maybe (left $ KafkaInvalidBroker l) right foundBroker
   requiredAcks <- use (kafkaClientState . stateRequiredAcks)
   requestTimeout <- use (kafkaClientState . stateRequestTimeout)
-  let h' = broker ^. brokerHost
-      p' = broker ^. brokerPort
-  cstate <- use kafkaClientState
-  r <- liftIO . runKafka (h', p') cstate . produce $ produceRequest requiredAcks requestTimeout ts
-  lift $ either left right r
+  withBrokerHandle broker $ \handle -> produce handle $ produceRequest requiredAcks requestTimeout ts
+
+-- | Execute a handler action, creating a new Pool and updating the connections Map if needed.
+withBrokerHandle :: Broker -> (Handle -> Kafka a) -> Kafka a
+withBrokerHandle broker f = do
+  conns <- use (kafkaClientState . stateConnections)
+  let foundPool = conns ^. at broker
+  pool <- case foundPool of
+    Nothing -> do
+      newPool <- liftIO $ mkPool broker
+      kafkaClientState . stateConnections .= (at broker ?~ newPool $ conns)
+      return newPool
+    Just p -> return p
+  Pool.withResource pool f
+    where mkPool :: Broker -> IO (Pool.Pool Handle)
+          mkPool b = Pool.createPool (createHandle b) hClose 1 10 1
+          createHandle b = do
+            let h = b ^. brokerHost ^. hostString
+                p = b ^. brokerPort ^. portId
+            Network.connectTo h p
+
+
 
 -- * Offsets
 
