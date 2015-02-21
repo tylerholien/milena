@@ -5,6 +5,7 @@ module Main where
 import Data.Functor
 import Data.Either (isRight)
 import Network.Kafka
+import Network.Kafka.Producer
 import Network.Kafka.Protocol (Leader(..))
 import Test.Hspec
 import Test.Hspec.QuickCheck
