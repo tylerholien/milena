@@ -42,7 +42,7 @@ library
                        either        >=4.3      && <4.4,
                        random        >=1.0      && <1.2,
                        transformers  >=0.3      && <0.5,
-                       lens          >=4.4      && <4.8,
+                       lens          >=4.4      && <4.12,
                        resource-pool >=0.2.3.2  && <0.3
 
 test-suite test
