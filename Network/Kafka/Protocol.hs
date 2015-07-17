@@ -491,6 +491,12 @@ messageSetByPartition p = keyed p . _4 . messageSetMembers . folded
 fetchResponseMessageMembers :: Fold FetchResponse MessageSetMember
 fetchResponseMessageMembers = fetchResponseMessages . messageSetMembers . folded
 
+messageKey :: Lens' Message Key
+messageKey = messageFields . _4
+
+messageKeyBytes :: Fold Message ByteString
+messageKeyBytes = messageKey . keyBytes . folded . kafkaByteString
+
 messageValue :: Lens' Message Value
 messageValue = messageFields . _5
 

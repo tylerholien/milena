@@ -1,10 +1,13 @@
 module Network.Kafka.Producer where
 
+import Prelude hiding ((!!))
 import Control.Applicative
 import Control.Lens
 import Control.Monad.Trans (liftIO, lift)
 import Control.Monad.Trans.Either
 import Data.ByteString.Char8 (ByteString)
+import qualified Data.Digest.Murmur32 as Murmur32
+import Data.List.Safe ((!!))
 import Data.Monoid ((<>))
 import System.IO
 import qualified Data.Map as M
@@ -43,12 +46,21 @@ partitionAndCollate ks = recurse ks M.empty
       where recurse [] accum = return accum
             recurse (x:xs) accum = do
               topicPartitionsList <- brokerPartitionInfo $ _tamTopic x
-              pal <- getPartition topicPartitionsList
+              let maybeKey = x ^. tamMessage . messageKey . keyBytes
+              pal <- case maybeKey of
+                Nothing -> getRandPartition topicPartitionsList
+                Just key -> return $ getPartitionByKey (_kafkaByteString key) topicPartitionsList
               let leader = maybe (Leader Nothing) _palLeader pal
                   tp = TopicAndPartition <$> pal ^? folded . palTopic <*> pal ^? folded . palPartition
                   b = M.singleton leader $ maybe M.empty (`M.singleton` [x]) tp
                   accum' = M.unionWith (M.unionWith (<>)) accum b
               recurse xs accum'
+
+-- | Compute the partition for a record. This matches the way the official
+-- | clients compute the partition.
+getPartitionByKey :: ByteString -> [PartitionAndLeader] -> Maybe PartitionAndLeader
+getPartitionByKey key ps = let i = Murmur32.asWord32 $ Murmur32.hash32WithSeed 0x9747b28c key
+                           in ps !! i
 
 -- | Execute a produce request using the values in the state.
 send :: Leader -> [(TopicAndPartition, MessageSet)] -> Kafka ProduceResponse
@@ -80,8 +92,8 @@ findMetadataOrElse ts s err = do
         Just x -> return x
         Nothing -> lift $ left $ err
 
-getPartition :: [PartitionAndLeader] -> Kafka (Maybe PartitionAndLeader)
-getPartition ps =
+getRandPartition :: [PartitionAndLeader] -> Kafka (Maybe PartitionAndLeader)
+getRandPartition ps =
     liftIO $ (ps' ^?) . element <$> getStdRandom (randomR (0, length ps' - 1))
         where ps' = ps ^.. folded . filtered (has $ palLeader . leaderId . _Just)
 
