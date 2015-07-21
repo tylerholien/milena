@@ -5,7 +5,8 @@
 module Network.Kafka where
 
 import Control.Applicative
-import Control.Exception (bracket)
+import Control.Exception (bracket, IOException)
+import Control.Exception.Lifted (catch)
 import Control.Lens
 import Control.Monad (liftM)
 import Control.Monad.Trans (liftIO, lift)
@@ -69,6 +70,7 @@ data KafkaClientError = -- | A response did not contain an offset.
                         -- | Could not find a cached broker for the found leader.
                       | KafkaInvalidBroker Leader
                       | KafkaFailedToFetchMetadata
+                      | KafkaIOException IOException
                         deriving (Eq, Show)
 
 -- | Type of response to expect, used for 'KafkaExpected' error.
@@ -169,15 +171,21 @@ doRequest r = do
   h <- use kafkaClientHandle
   doRequest' h r
 
+guardIO :: IO a -> Kafka a
+guardIO action = liftIO action `catch` \e -> lift . left $ KafkaIOException (e :: IOException)
+
 doRequest' :: Handle -> Request -> Kafka Response
-doRequest' h r = mapStateT (bimapEitherT KafkaDeserializationError id) $ do
-  dataLength <- lift . EitherT $ do
+doRequest' h r = do
+  rawLength <- guardIO $ do
     B.hPut h $ requestBytes r
     hFlush h
-    rawLength <- B.hGet h 4
-    return $ runGet (liftM fromIntegral getWord32be) rawLength
-  resp <- liftIO $ B.hGet h dataLength
-  lift . hoistEither $ runGet (getResponse dataLength) resp
+    B.hGet h 4
+  dataLength <- runGetKafka (liftM fromIntegral getWord32be) rawLength
+  resp <- guardIO $ B.hGet h dataLength
+  runGetKafka (getResponse dataLength) resp
+
+runGetKafka :: Get a -> ByteString -> Kafka a
+runGetKafka g bs = lift $ bimapEitherT KafkaDeserializationError id $ hoistEither $ runGet g bs
 
 -- | Send a metadata request
 metadata :: MetadataRequest -> Kafka MetadataResponse
@@ -187,8 +195,8 @@ metadata request = do
 
 -- | Send a metadata request
 metadata' :: Handle -> MetadataRequest -> Kafka MetadataResponse
-metadata' handle request =
-    makeRequest (MetadataRequest request) >>= doRequest' handle >>= expectResponse ExpectedMetadata _MetadataResponse
+metadata' h request =
+    makeRequest (MetadataRequest request) >>= doRequest' h >>= expectResponse ExpectedMetadata _MetadataResponse
 
 -- | Function to give an error when the response seems wrong.
 expectResponse :: KafkaExpectedResponse -> Getting (Leftmost b) ResponseMessage b -> Response -> Kafka b
@@ -244,24 +252,22 @@ updateAllMetadata = updateMetadatas []
 
 -- | Execute a handler action, creating a new Pool and updating the connections Map if needed.
 withBrokerHandle :: Broker -> (Handle -> Kafka a) -> Kafka a
-withBrokerHandle broker f = do
+withBrokerHandle broker kafkaAction = do
   conns <- use (kafkaClientState . stateConnections)
   let foundPool = conns ^. at broker
   pool <- case foundPool of
     Nothing -> do
-      newPool <- liftIO $ mkPool broker
+      newPool <- guardIO $ mkPool broker
       kafkaClientState . stateConnections .= (at broker ?~ newPool $ conns)
       return newPool
     Just p -> return p
-  Pool.withResource pool f
+  Pool.withResource pool kafkaAction
     where mkPool :: Broker -> IO (Pool.Pool Handle)
           mkPool b = Pool.createPool (createHandle b) hClose 1 10 1
           createHandle b = do
             let h = b ^. brokerHost ^. hostString
                 p = b ^. brokerPort ^. portId
             Network.connectTo h p
-
-
 
 -- * Offsets
 
