@@ -24,6 +24,8 @@ import Prelude
 
 import Network.Kafka.Protocol
 
+type KafkaAddress = (Host, Port)
+
 data KafkaState = KafkaState { -- | Name to use as a client ID.
                                _stateName :: KafkaString
                                -- | How many acknowledgements are required for producing.
@@ -41,7 +43,7 @@ data KafkaState = KafkaState { -- | Name to use as a client ID.
                                -- | Broker cache
                              , _stateBrokers :: M.Map Leader Broker
                                -- | Connection cache
-                             , _stateConnections :: M.Map Broker (Pool.Pool Handle)
+                             , _stateConnections :: M.Map KafkaAddress (Pool.Pool Handle)
                                -- | Topic metadata cache
                              , _stateTopicMetadata :: M.Map TopicName TopicMetadata
                              }
@@ -57,7 +59,6 @@ makeLenses ''KafkaClient
 -- | The core Kafka monad.
 type Kafka = StateT KafkaClient (EitherT KafkaClientError IO)
 
-type KafkaAddress = (Host, Port)
 type KafkaClientId = KafkaString
 
 -- | Errors given from the Kafka monad.
@@ -253,21 +254,27 @@ updateAllMetadata = updateMetadatas []
 -- | Execute a handler action, creating a new Pool and updating the connections Map if needed.
 withBrokerHandle :: Broker -> (Handle -> Kafka a) -> Kafka a
 withBrokerHandle broker kafkaAction = do
+  let address = broker2address broker
+  withAddressHandle address kafkaAction
+
+withAddressHandle :: KafkaAddress -> (Handle -> Kafka a) -> Kafka a
+withAddressHandle address kafkaAction = do
   conns <- use (kafkaClientState . stateConnections)
-  let foundPool = conns ^. at broker
+  let foundPool = conns ^. at address
   pool <- case foundPool of
     Nothing -> do
-      newPool <- guardIO $ mkPool broker
-      kafkaClientState . stateConnections .= (at broker ?~ newPool $ conns)
+      newPool <- guardIO $ mkPool address
+      kafkaClientState . stateConnections .= (at address ?~ newPool $ conns)
       return newPool
     Just p -> return p
   Pool.withResource pool kafkaAction
-    where mkPool :: Broker -> IO (Pool.Pool Handle)
-          mkPool b = Pool.createPool (createHandle b) hClose 1 10 1
-          createHandle b = do
-            let h = b ^. brokerHost ^. hostString
-                p = b ^. brokerPort ^. portId
-            Network.connectTo h p
+
+mkPool :: KafkaAddress -> IO (Pool.Pool Handle)
+mkPool a = Pool.createPool (createHandle a) hClose 1 10 1
+  where createHandle (h, p) = Network.connectTo (h ^. hostString) (p ^. portId)
+
+broker2address :: Broker -> KafkaAddress
+broker2address broker = (,) (broker ^. brokerHost) (broker ^. brokerPort)
 
 -- * Offsets
 
