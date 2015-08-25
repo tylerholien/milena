@@ -32,7 +32,7 @@ main = hspec $ do
       let messages = byteMessages ms
       result <- run $ do
         info <- brokerPartitionInfo topic
-        leader <- maybe (Leader Nothing) _palLeader <$> getPartition info
+        leader <- maybe (Leader Nothing) _palLeader <$> getRandPartition info
         offset <- getLastOffset LatestTime 0 topic
         void $ send leader [(TopicAndPartition topic 0, groupMessagesToSet messages)]
         fmap tamPayload . fetchMessages <$> (fetch =<< fetchRequest offset 0 topic)
