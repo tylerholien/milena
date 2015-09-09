@@ -40,7 +40,7 @@ library
                        network       >=2.4      && <2.7,
                        digest        >=0.0.1.0  && <0.1,
                        containers    >=0.5      && <0.6,
-                       either        >=4.3      && <4.4,
+                       either        >=4.3      && <4.5,
                        random        >=1.0      && <1.2,
                        transformers  >=0.3      && <0.5,
                        lens          >=4.4      && <4.13,
