@@ -19,6 +19,7 @@ import System.IO
 import qualified Data.ByteString.Char8 as B
 import qualified Data.Map as M
 import qualified Network
+import Prelude
 
 import Network.Kafka.Protocol
 

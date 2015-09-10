@@ -5,7 +5,7 @@
 
 module Network.Kafka.Protocol where
 
-import Control.Applicative (Applicative(..), Alternative(..), (<$>), (<*>))
+import Control.Applicative
 import Control.Category (Category(..))
 import Control.Lens
 import Control.Monad (replicateM, liftM, liftM2, liftM3, liftM4, liftM5)

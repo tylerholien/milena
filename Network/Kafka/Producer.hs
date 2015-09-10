@@ -1,6 +1,5 @@
 module Network.Kafka.Producer where
 
-import Prelude hiding ((!!))
 import Control.Applicative
 import Control.Lens
 import Control.Monad.Trans (liftIO, lift)
@@ -12,6 +11,7 @@ import Data.Monoid ((<>))
 import System.IO
 import qualified Data.Map as M
 import System.Random (getStdRandom, randomR)
+import Prelude hiding ((!!))
 
 import Network.Kafka
 import Network.Kafka.Protocol
