@@ -5,7 +5,7 @@
 module Network.Kafka where
 
 import Control.Applicative
-import Control.Exception (bracket, IOException)
+import Control.Exception (IOException)
 import Control.Exception.Lifted (catch)
 import Control.Lens
 import Control.Monad (liftM)
@@ -13,6 +13,8 @@ import Control.Monad.Trans (liftIO, lift)
 import Control.Monad.Trans.Either
 import Control.Monad.Trans.State
 import Data.ByteString.Char8 (ByteString)
+import Data.List.NonEmpty (NonEmpty(..))
+import qualified Data.List.NonEmpty as NE
 import Data.Monoid ((<>))
 import qualified Data.Pool as Pool
 import Data.Serialize.Get
@@ -46,18 +48,13 @@ data KafkaState = KafkaState { -- | Name to use as a client ID.
                              , _stateConnections :: M.Map KafkaAddress (Pool.Pool Handle)
                                -- | Topic metadata cache
                              , _stateTopicMetadata :: M.Map TopicName TopicMetadata
+                             , _stateAddresses :: NonEmpty KafkaAddress
                              }
 
 makeLenses ''KafkaState
 
-data KafkaClient = KafkaClient { _kafkaClientState :: KafkaState
-                               , _kafkaClientHandle :: Handle
-                               }
-
-makeLenses ''KafkaClient
-
 -- | The core Kafka monad.
-type Kafka = StateT KafkaClient (EitherT KafkaClientError IO)
+type Kafka = StateT KafkaState (EitherT KafkaClientError IO)
 
 type KafkaClientId = KafkaString
 
@@ -140,8 +137,8 @@ defaultMaxWaitTime :: MaxWaitTime
 defaultMaxWaitTime = 0
 
 -- | Create a consumer using default values.
-defaultState :: KafkaClientId -> KafkaState
-defaultState cid =
+mkKafkaState :: KafkaClientId -> KafkaAddress -> KafkaState
+mkKafkaState cid addy =
     KafkaState cid
                defaultRequiredAcks
                defaultRequestTimeout
@@ -152,25 +149,29 @@ defaultState cid =
                M.empty
                M.empty
                M.empty
+               (addy :| [])
 
--- | Run the underlying Kafka monad at the given leader address and initial state.
-runKafka :: KafkaAddress -> KafkaState -> Kafka a -> IO (Either KafkaClientError a)
-runKafka (h, p) s k =
-  bracket (Network.connectTo (h ^. hostString) (p ^. portId)) hClose $ runEitherT . evalStateT k . KafkaClient s
+addKafkaAddress :: KafkaAddress -> KafkaState -> KafkaState
+addKafkaAddress = over stateAddresses . NE.nub .: cons
+  where infixr 9 .:
+        (.:) :: (c -> d) -> (a -> b -> c) -> a -> b -> d
+        (.:) = (.).(.)
+
+-- | Run the underlying Kafka monad.
+runKafka :: KafkaState -> Kafka a -> IO (Either KafkaClientError a)
+runKafka s k = runEitherT $ evalStateT k s
 
 -- | Make a request, incrementing the `_stateCorrelationId`.
 makeRequest :: RequestMessage -> Kafka Request
 makeRequest m = do
-  corid <- use (kafkaClientState . stateCorrelationId)
-  kafkaClientState . stateCorrelationId += 1
-  conid <- use (kafkaClientState . stateName)
+  corid <- use stateCorrelationId
+  stateCorrelationId += 1
+  conid <- use stateName
   return $ Request (corid, ClientId conid, m)
 
 -- | Perform a request and deserialize the response.
 doRequest :: Request -> Kafka Response
-doRequest r = do
-  h <- use kafkaClientHandle
-  doRequest' h r
+doRequest r = withAnyHandle $ flip doRequest' r
 
 guardIO :: IO a -> Kafka a
 guardIO action = liftIO action `catch` \e -> lift . left $ KafkaIOException (e :: IOException)
@@ -190,9 +191,7 @@ runGetKafka g bs = lift $ bimapEitherT KafkaDeserializationError id $ hoistEithe
 
 -- | Send a metadata request
 metadata :: MetadataRequest -> Kafka MetadataResponse
-metadata request = do
-  h <- use kafkaClientHandle
-  metadata' h request
+metadata request = withAnyHandle $ flip metadata' request
 
 -- | Send a metadata request
 metadata' :: Handle -> MetadataRequest -> Kafka MetadataResponse
@@ -218,9 +217,9 @@ ordinaryConsumerId = ReplicaId (-1)
 -- | Construct a fetch request from the values in the state.
 fetchRequest :: Offset -> Partition -> TopicName -> Kafka FetchRequest
 fetchRequest o p topic = do
-  wt <- use (kafkaClientState . stateWaitTime)
-  ws <- use (kafkaClientState . stateWaitSize)
-  bs <- use (kafkaClientState . stateBufferSize)
+  wt <- use stateWaitTime
+  ws <- use stateWaitSize
+  bs <- use stateBufferSize
   return $ FetchReq (ordinaryConsumerId, wt, ws, [(topic, [(p, o, bs)])])
 
 -- | Execute a fetch request and get the raw fetch response.
@@ -237,8 +236,10 @@ updateMetadatas :: [TopicName] -> Kafka ()
 updateMetadatas ts = do
   md <- metadata $ MetadataReq ts
   let (brokers, tmds) = (md ^.. metadataResponseBrokers . folded, md ^.. topicsMetadata . folded)
-  kafkaClientState . stateBrokers %= \m -> foldr addBroker m brokers
-  kafkaClientState . stateTopicMetadata %= \m -> foldr addTopicMetadata m tmds
+      addresses = map broker2address brokers
+  stateAddresses %= NE.nub . NE.fromList . (++ addresses) . NE.toList
+  stateBrokers %= \m -> foldr addBroker m brokers
+  stateTopicMetadata %= \m -> foldr addTopicMetadata m tmds
   return ()
     where addBroker :: Broker -> M.Map Leader Broker -> M.Map Leader Broker
           addBroker b = M.insert (Leader . Just $ b ^. brokerNode . nodeId) b
@@ -253,28 +254,36 @@ updateAllMetadata = updateMetadatas []
 
 -- | Execute a handler action, creating a new Pool and updating the connections Map if needed.
 withBrokerHandle :: Broker -> (Handle -> Kafka a) -> Kafka a
-withBrokerHandle broker kafkaAction = do
-  let address = broker2address broker
-  withAddressHandle address kafkaAction
+withBrokerHandle broker = withAddressHandle (broker2address broker)
 
 withAddressHandle :: KafkaAddress -> (Handle -> Kafka a) -> Kafka a
 withAddressHandle address kafkaAction = do
-  conns <- use (kafkaClientState . stateConnections)
+  conns <- use stateConnections
   let foundPool = conns ^. at address
   pool <- case foundPool of
     Nothing -> do
       newPool <- guardIO $ mkPool address
-      kafkaClientState . stateConnections .= (at address ?~ newPool $ conns)
+      stateConnections .= (at address ?~ newPool $ conns)
       return newPool
     Just p -> return p
   Pool.withResource pool kafkaAction
-
-mkPool :: KafkaAddress -> IO (Pool.Pool Handle)
-mkPool a = Pool.createPool (createHandle a) hClose 1 10 1
-  where createHandle (h, p) = Network.connectTo (h ^. hostString) (p ^. portId)
+    where
+      mkPool :: KafkaAddress -> IO (Pool.Pool Handle)
+      mkPool a = Pool.createPool (createHandle a) hClose 1 10 1
+        where createHandle (h, p) = Network.connectTo (h ^. hostString) (p ^. portId)
 
 broker2address :: Broker -> KafkaAddress
 broker2address broker = (,) (broker ^. brokerHost) (broker ^. brokerPort)
+
+withAnyHandle :: (Handle -> Kafka a) -> Kafka a
+withAnyHandle f = do
+  (addy :| _) <- use stateAddresses
+  x <- withAddressHandle addy f
+  stateAddresses %= rotate
+  return x
+    where rotate :: NonEmpty a -> NonEmpty a
+          rotate = NE.fromList . rotate' 1 . NE.toList
+          rotate' n xs = zipWith const (drop n (cycle xs)) xs
 
 -- * Offsets
 

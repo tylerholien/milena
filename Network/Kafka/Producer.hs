@@ -65,22 +65,22 @@ getPartitionByKey key ps = let i = Murmur32.asWord32 $ Murmur32.hash32WithSeed 0
 -- | Execute a produce request using the values in the state.
 send :: Leader -> [(TopicAndPartition, MessageSet)] -> Kafka ProduceResponse
 send l ts = do
-  let s = kafkaClientState . stateBrokers . at l
+  let s = stateBrokers . at l
       topicNames = map (_tapTopic . fst) ts
   broker <- findMetadataOrElse topicNames s (KafkaInvalidBroker l)
-  requiredAcks <- use (kafkaClientState . stateRequiredAcks)
-  requestTimeout <- use (kafkaClientState . stateRequestTimeout)
+  requiredAcks <- use stateRequiredAcks
+  requestTimeout <- use stateRequestTimeout
   withBrokerHandle broker $ \handle -> produce handle $ produceRequest requiredAcks requestTimeout ts
 
 -- | Find a leader and partition for the topic.
 brokerPartitionInfo :: TopicName -> Kafka [PartitionAndLeader]
 brokerPartitionInfo t = do
-  let s = kafkaClientState . stateTopicMetadata . at t
+  let s = stateTopicMetadata . at t
   tmd <- findMetadataOrElse [t] s KafkaFailedToFetchMetadata
   return $ pal <$> tmd ^. partitionsMetadata
     where pal d = PartitionAndLeader t (d ^. partitionId) (d ^. partitionMetadataLeader)
 
-findMetadataOrElse :: [TopicName] -> Getting (Maybe a) KafkaClient (Maybe a) -> KafkaClientError -> Kafka a
+findMetadataOrElse :: [TopicName] -> Getting (Maybe a) KafkaState (Maybe a) -> KafkaClientError -> Kafka a
 findMetadataOrElse ts s err = do
   maybeFound <- use s
   case maybeFound of
@@ -90,7 +90,7 @@ findMetadataOrElse ts s err = do
       maybeFound' <- use s
       case maybeFound' of
         Just x -> return x
-        Nothing -> lift $ left $ err
+        Nothing -> lift $ left err
 
 getRandPartition :: [PartitionAndLeader] -> Kafka (Maybe PartitionAndLeader)
 getRandPartition ps =
