@@ -173,17 +173,22 @@ makeRequest m = do
 doRequest :: Request -> Kafka Response
 doRequest r = withAnyHandle $ flip doRequest' r
 
-guardIO :: IO a -> Kafka a
-guardIO action = liftIO action `catch` \e -> lift . left $ KafkaIOException (e :: IOException)
+-- | Catch 'IOException's and wrap them in 'KafkaIOException's.
+tryKafkaIO :: IO a -> Kafka a
+tryKafkaIO = tryKafka . liftIO
+
+-- | Catch 'IOException's and wrap them in 'KafkaIOException's.
+tryKafka :: Kafka a -> Kafka a
+tryKafka = (`catch` \e -> lift . left $ KafkaIOException (e :: IOException))
 
 doRequest' :: Handle -> Request -> Kafka Response
 doRequest' h r = do
-  rawLength <- guardIO $ do
+  rawLength <- tryKafkaIO $ do
     B.hPut h $ requestBytes r
     hFlush h
     B.hGet h 4
   dataLength <- runGetKafka (liftM fromIntegral getWord32be) rawLength
-  resp <- guardIO $ B.hGet h dataLength
+  resp <- tryKafkaIO $ B.hGet h dataLength
   runGetKafka (getResponse dataLength) resp
 
 runGetKafka :: Get a -> ByteString -> Kafka a
@@ -262,11 +267,11 @@ withAddressHandle address kafkaAction = do
   let foundPool = conns ^. at address
   pool <- case foundPool of
     Nothing -> do
-      newPool <- guardIO $ mkPool address
+      newPool <- tryKafkaIO $ mkPool address
       stateConnections .= (at address ?~ newPool $ conns)
       return newPool
     Just p -> return p
-  Pool.withResource pool kafkaAction
+  tryKafka $ Pool.withResource pool kafkaAction
     where
       mkPool :: KafkaAddress -> IO (Pool.Pool Handle)
       mkPool a = Pool.createPool (createHandle a) hClose 1 10 1
