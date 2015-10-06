@@ -31,7 +31,7 @@ library
   default-language: Haskell2010
   ghc-options:         -Wall
   exposed-modules:     Network.Kafka,
-                       Network.Kafka.Protocol
+                       Network.Kafka.Protocol,
                        Network.Kafka.Producer
   build-depends:       base          >=4.7      && <5,
                        mtl           >=2.1      && <2.3,
@@ -40,7 +40,6 @@ library
                        network       >=2.4      && <2.7,
                        digest        >=0.0.1.0  && <0.1,
                        containers    >=0.5      && <0.6,
-                       either        >=4.3      && <4.5,
                        random        >=1.0      && <1.2,
                        transformers  >=0.3      && <0.5,
                        lens          >=4.4      && <4.13,
@@ -59,7 +58,11 @@ test-suite test
                        network,
                        QuickCheck,
                        bytestring,
-                       hspec
+                       lens,
+                       semigroups,
+                       tasty,
+                       tasty-hspec,
+                       tasty-quickcheck
   hs-source-dirs:      test
   main-is:             tests.hs
   type:                exitcode-stdio-1.0

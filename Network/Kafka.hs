@@ -9,8 +9,8 @@ import Control.Exception (IOException)
 import Control.Exception.Lifted (catch)
 import Control.Lens
 import Control.Monad (liftM)
+import Control.Monad.Except (ExceptT(..), runExceptT, withExceptT, MonadError(..))
 import Control.Monad.Trans (liftIO, lift)
-import Control.Monad.Trans.Either
 import Control.Monad.Trans.State
 import Data.ByteString.Char8 (ByteString)
 import Data.List.NonEmpty (NonEmpty(..))
@@ -48,13 +48,14 @@ data KafkaState = KafkaState { -- | Name to use as a client ID.
                              , _stateConnections :: M.Map KafkaAddress (Pool.Pool Handle)
                                -- | Topic metadata cache
                              , _stateTopicMetadata :: M.Map TopicName TopicMetadata
+                               -- | Address cache
                              , _stateAddresses :: NonEmpty KafkaAddress
-                             }
+                             } deriving (Show)
 
 makeLenses ''KafkaState
 
 -- | The core Kafka monad.
-type Kafka = StateT KafkaState (EitherT KafkaClientError IO)
+type Kafka = StateT KafkaState (ExceptT KafkaClientError IO)
 
 type KafkaClientId = KafkaString
 
@@ -159,7 +160,7 @@ addKafkaAddress = over stateAddresses . NE.nub .: cons
 
 -- | Run the underlying Kafka monad.
 runKafka :: KafkaState -> Kafka a -> IO (Either KafkaClientError a)
-runKafka s k = runEitherT $ evalStateT k s
+runKafka s k = runExceptT $ evalStateT k s
 
 -- | Make a request, incrementing the `_stateCorrelationId`.
 makeRequest :: RequestMessage -> Kafka Request
@@ -169,20 +170,16 @@ makeRequest m = do
   conid <- use stateName
   return $ Request (corid, ClientId conid, m)
 
--- | Perform a request and deserialize the response.
-doRequest :: Request -> Kafka Response
-doRequest r = withAnyHandle $ flip doRequest' r
-
 -- | Catch 'IOException's and wrap them in 'KafkaIOException's.
 tryKafkaIO :: IO a -> Kafka a
 tryKafkaIO = tryKafka . liftIO
 
 -- | Catch 'IOException's and wrap them in 'KafkaIOException's.
 tryKafka :: Kafka a -> Kafka a
-tryKafka = (`catch` \e -> lift . left $ KafkaIOException (e :: IOException))
+tryKafka = (`catch` \e -> lift . throwError $ KafkaIOException (e :: IOException))
 
-doRequest' :: Handle -> Request -> Kafka Response
-doRequest' h r = do
+doRequest :: Handle -> Request -> Kafka Response
+doRequest h r = do
   rawLength <- tryKafkaIO $ do
     B.hPut h $ requestBytes r
     hFlush h
@@ -192,7 +189,7 @@ doRequest' h r = do
   runGetKafka (getResponse dataLength) resp
 
 runGetKafka :: Get a -> ByteString -> Kafka a
-runGetKafka g bs = lift $ bimapEitherT KafkaDeserializationError id $ hoistEither $ runGet g bs
+runGetKafka g bs = lift $ withExceptT KafkaDeserializationError $ ExceptT $ return $ runGet g bs
 
 -- | Send a metadata request
 metadata :: MetadataRequest -> Kafka MetadataResponse
@@ -201,11 +198,41 @@ metadata request = withAnyHandle $ flip metadata' request
 -- | Send a metadata request
 metadata' :: Handle -> MetadataRequest -> Kafka MetadataResponse
 metadata' h request =
-    makeRequest (MetadataRequest request) >>= doRequest' h >>= expectResponse ExpectedMetadata _MetadataResponse
+    makeRequest (MetadataRequest request) >>= doRequest h >>= expectResponse ExpectedMetadata _MetadataResponse
+
+getTopicPartitionLeader :: TopicName -> Partition -> Kafka Broker
+getTopicPartitionLeader t p = do
+  let s = stateTopicMetadata . at t
+  tmd <- findMetadataOrElse [t] s KafkaFailedToFetchMetadata
+  leader <- expect KafkaFailedToFetchMetadata (firstOf $ findPartitionMetadata t . (folded . findPartition p) . partitionMetadataLeader) tmd
+  use stateBrokers >>= expect (KafkaInvalidBroker leader) (view $ at leader)
+
+expect :: KafkaClientError -> (a -> Maybe b) -> a -> Kafka b
+expect e f = lift . maybe (throwError e) return . f
+
+-- | Find a leader and partition for the topic.
+brokerPartitionInfo :: TopicName -> Kafka [PartitionAndLeader]
+brokerPartitionInfo t = do
+  let s = stateTopicMetadata . at t
+  tmd <- findMetadataOrElse [t] s KafkaFailedToFetchMetadata
+  return $ pal <$> tmd ^. partitionsMetadata
+    where pal d = PartitionAndLeader t (d ^. partitionId) (d ^. partitionMetadataLeader)
+
+findMetadataOrElse :: [TopicName] -> Getting (Maybe a) KafkaState (Maybe a) -> KafkaClientError -> Kafka a
+findMetadataOrElse ts s err = do
+  maybeFound <- use s
+  case maybeFound of
+    Just x -> return x
+    Nothing -> do
+      updateMetadatas ts
+      maybeFound' <- use s
+      case maybeFound' of
+        Just x -> return x
+        Nothing -> lift $ throwError err
 
 -- | Function to give an error when the response seems wrong.
 expectResponse :: KafkaExpectedResponse -> Getting (Leftmost b) ResponseMessage b -> Response -> Kafka b
-expectResponse e p = lift . maybe (left $ KafkaExpected e) return . firstOf (responseMessage . p)
+expectResponse e p = expect (KafkaExpected e) (firstOf $ responseMessage . p)
 
 -- | Convert an abstract time to a serializable protocol value.
 protocolTime :: KafkaTime -> Time
@@ -228,9 +255,14 @@ fetchRequest o p topic = do
   return $ FetchReq (ordinaryConsumerId, wt, ws, [(topic, [(p, o, bs)])])
 
 -- | Execute a fetch request and get the raw fetch response.
+fetch' :: Handle -> FetchRequest -> Kafka FetchResponse
+fetch' h request =
+    makeRequest (FetchRequest request) >>= doRequest h >>= expectResponse ExpectedFetch _FetchResponse
+
+-- | Execute a fetch request and get the raw fetch response. Round-robins the
+-- requests to addresses in the 'KafkaState'.
 fetch :: FetchRequest -> Kafka FetchResponse
-fetch request =
-    makeRequest (FetchRequest request) >>= doRequest >>= expectResponse ExpectedFetch _FetchResponse
+fetch request = withAnyHandle $ flip fetch' request
 
 -- | Extract out messages with their topics from a fetch response.
 fetchMessages :: FetchResponse -> [TopicAndMessage]
@@ -257,10 +289,27 @@ updateMetadata t = updateMetadatas [t]
 updateAllMetadata :: Kafka ()
 updateAllMetadata = updateMetadatas []
 
--- | Execute a handler action, creating a new Pool and updating the connections Map if needed.
+-- | Execute a Kafka action with a 'Handle' for the given 'Broker', updating
+-- the connections cache if needed.
+--
+-- When the action throws an 'IOException', it is caught and returned as a
+-- 'KafkaIOException' in the Kafka monad.
+--
+-- Note that when the given action throws an exception, any state changes will
+-- be discarded. This includes both 'IOException's and exceptions thrown by
+-- 'throwError' from 'Control.Monad.Except'.
 withBrokerHandle :: Broker -> (Handle -> Kafka a) -> Kafka a
 withBrokerHandle broker = withAddressHandle (broker2address broker)
 
+-- | Execute a Kafka action with a 'Handle' for the given 'KafkaAddress',
+-- updating the connections cache if needed.
+--
+-- When the action throws an 'IOException', it is caught and returned as a
+-- 'KafkaIOException' in the Kafka monad.
+--
+-- Note that when the given action throws an exception, any state changes will
+-- be discarded. This includes both 'IOException's and exceptions thrown by
+-- 'throwError' from 'Control.Monad.Except'.
 withAddressHandle :: KafkaAddress -> (Handle -> Kafka a) -> Kafka a
 withAddressHandle address kafkaAction = do
   conns <- use stateConnections
@@ -280,6 +329,14 @@ withAddressHandle address kafkaAction = do
 broker2address :: Broker -> KafkaAddress
 broker2address broker = (,) (broker ^. brokerHost) (broker ^. brokerPort)
 
+-- | Like 'withAddressHandle', but round-robins the addresses in the 'KafkaState'.
+--
+-- When the action throws an 'IOException', it is caught and returned as a
+-- 'KafkaIOException' in the Kafka monad.
+--
+-- Note that when the given action throws an exception, any state changes will
+-- be discarded. This includes both 'IOException's and exceptions thrown by
+-- 'throwError' from 'Control.Monad.Except'.
 withAnyHandle :: (Handle -> Kafka a) -> Kafka a
 withAnyHandle f = do
   (addy :| _) <- use stateAddresses
@@ -300,11 +357,16 @@ data PartitionOffsetRequestInfo =
                                , _maxNumOffsets :: MaxNumberOfOffsets
                                }
 
--- TODO: Properly look up the offset via the partition.
 -- | Get the first found offset.
 getLastOffset :: KafkaTime -> Partition -> TopicName -> Kafka Offset
-getLastOffset m p t =
-    makeRequest (offsetRequest [(TopicAndPartition t p, PartitionOffsetRequestInfo m 1)]) >>= doRequest >>= maybe (StateT . const $ left KafkaNoOffset) return . firstOf (responseMessage . _OffsetResponse . offsetResponseOffset p)
+getLastOffset m p t = do
+  broker <- getTopicPartitionLeader t p
+  withBrokerHandle broker (\h -> getLastOffset' h m p t)
+
+-- | Get the first found offset.
+getLastOffset' :: Handle -> KafkaTime -> Partition -> TopicName -> Kafka Offset
+getLastOffset' h m p t =
+    makeRequest (offsetRequest [(TopicAndPartition t p, PartitionOffsetRequestInfo m 1)]) >>= doRequest h >>= maybe (StateT . const $ throwError KafkaNoOffset) return . firstOf (responseMessage . _OffsetResponse . offsetResponseOffset p)
 
 -- | Create an offset request.
 offsetRequest :: [(TopicAndPartition, PartitionOffsetRequestInfo)] -> RequestMessage

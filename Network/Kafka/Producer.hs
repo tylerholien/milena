@@ -2,8 +2,7 @@ module Network.Kafka.Producer where
 
 import Control.Applicative
 import Control.Lens
-import Control.Monad.Trans (liftIO, lift)
-import Control.Monad.Trans.Either
+import Control.Monad.Trans (liftIO)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.Digest.Murmur32 as Murmur32
 import Data.List.Safe ((!!))
@@ -21,7 +20,7 @@ import Network.Kafka.Protocol
 -- | Execute a produce request and get the raw preduce response.
 produce :: Handle -> ProduceRequest -> Kafka ProduceResponse
 produce handle request =
-    makeRequest (ProduceRequest request) >>= doRequest' handle >>= expectResponse ExpectedProduce _ProduceResponse
+    makeRequest (ProduceRequest request) >>= doRequest handle >>= expectResponse ExpectedProduce _ProduceResponse
 
 -- | Construct a produce request with explicit arguments.
 produceRequest :: RequiredAcks -> Timeout -> [(TopicAndPartition, MessageSet)] -> ProduceRequest
@@ -71,26 +70,6 @@ send l ts = do
   requiredAcks <- use stateRequiredAcks
   requestTimeout <- use stateRequestTimeout
   withBrokerHandle broker $ \handle -> produce handle $ produceRequest requiredAcks requestTimeout ts
-
--- | Find a leader and partition for the topic.
-brokerPartitionInfo :: TopicName -> Kafka [PartitionAndLeader]
-brokerPartitionInfo t = do
-  let s = stateTopicMetadata . at t
-  tmd <- findMetadataOrElse [t] s KafkaFailedToFetchMetadata
-  return $ pal <$> tmd ^. partitionsMetadata
-    where pal d = PartitionAndLeader t (d ^. partitionId) (d ^. partitionMetadataLeader)
-
-findMetadataOrElse :: [TopicName] -> Getting (Maybe a) KafkaState (Maybe a) -> KafkaClientError -> Kafka a
-findMetadataOrElse ts s err = do
-  maybeFound <- use s
-  case maybeFound of
-    Just x -> return x
-    Nothing -> do
-      updateMetadatas ts
-      maybeFound' <- use s
-      case maybeFound' of
-        Just x -> return x
-        Nothing -> lift $ left err
 
 getRandPartition :: [PartitionAndLeader] -> Kafka (Maybe PartitionAndLeader)
 getRandPartition ps =

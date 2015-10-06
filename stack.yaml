@@ -3,4 +3,4 @@ packages:
 - '.'
 extra-deps:
   - listsafe-0.1.0.1
-resolver: lts-3.6
+resolver: lts-3.8
