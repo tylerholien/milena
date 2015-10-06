@@ -17,6 +17,7 @@ category:            Network
 build-type:          Simple
 stability:           alpha
 cabal-version:       >=1.10
+extra-source-files:  README.md
 
 source-repository head
   type: git
