@@ -7,7 +7,8 @@ name:                milena
 version:             0.4.0.0
 synopsis:            A Kafka client for Haskell.
 description:
-    The protocol module is stable (the only changes will be to support changes in the Kafka protocol). The API is functional but subject to change.
+  A Kafka client for Haskell.
+  The protocol module is stable (the only changes will be to support changes in the Kafka protocol). The API is functional but subject to change.
 license:             BSD3
 license-file:        LICENSE
 author:              Tyler Holien
@@ -47,7 +48,6 @@ library
                        resource-pool >=0.2.3.2  && <0.3,
                        lifted-base   >=0.2.3.6  && <0.3,
                        murmur-hash   >=0.1.0.8  && <0.2,
-                       listsafe      >=0.1.0.1  && <0.2,
                        semigroups    >=0.16.2.2 && <0.17
 
 test-suite test

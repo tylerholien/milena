@@ -5,12 +5,12 @@ import Control.Lens
 import Control.Monad.Trans (liftIO)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.Digest.Murmur32 as Murmur32
-import Data.List.Safe ((!!))
 import Data.Monoid ((<>))
 import System.IO
 import qualified Data.Map as M
 import System.Random (getStdRandom, randomR)
-import Prelude hiding ((!!))
+
+import Prelude
 
 import Network.Kafka
 import Network.Kafka.Protocol
@@ -59,7 +59,7 @@ partitionAndCollate ks = recurse ks M.empty
 -- | clients compute the partition.
 getPartitionByKey :: ByteString -> [PartitionAndLeader] -> Maybe PartitionAndLeader
 getPartitionByKey key ps = let i = Murmur32.asWord32 $ Murmur32.hash32WithSeed 0x9747b28c key
-                           in ps !! i
+                           in ps ^? ix (fromIntegral i)
 
 -- | Execute a produce request using the values in the state.
 send :: Leader -> [(TopicAndPartition, MessageSet)] -> Kafka ProduceResponse
