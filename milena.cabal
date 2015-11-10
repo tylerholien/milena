@@ -31,7 +31,7 @@ source-repository this
 
 library
   default-language: Haskell2010
-  ghc-options:         -Wall
+  ghc-options:         -Wall -fwarn-incomplete-uni-patterns
   exposed-modules:     Network.Kafka,
                        Network.Kafka.Protocol,
                        Network.Kafka.Producer
@@ -52,7 +52,7 @@ library
 
 test-suite test
   default-language: Haskell2010
-  ghc-options:         -Wall -threaded
+  ghc-options:         -Wall -threaded -fwarn-incomplete-uni-patterns
   build-depends:       base,
                        milena,
                        mtl,
