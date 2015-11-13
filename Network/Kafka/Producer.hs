@@ -1,10 +1,11 @@
 module Network.Kafka.Producer where
 
+import Data.Bits ((.&.))
+import Data.ByteString.Char8 (ByteString)
+import qualified Data.Digest.Murmur32 as Murmur32
 import Control.Applicative
 import Control.Lens
 import Control.Monad.Trans (liftIO)
-import Data.ByteString.Char8 (ByteString)
-import qualified Data.Digest.Murmur32 as Murmur32
 import Data.Monoid ((<>))
 import System.IO
 import qualified Data.Map as M
@@ -58,8 +59,12 @@ partitionAndCollate ks = recurse ks M.empty
 -- | Compute the partition for a record. This matches the way the official
 -- | clients compute the partition.
 getPartitionByKey :: ByteString -> [PartitionAndLeader] -> Maybe PartitionAndLeader
-getPartitionByKey key ps = let i = Murmur32.asWord32 $ Murmur32.hash32WithSeed 0x9747b28c key
-                           in ps ^? ix (fromIntegral i)
+getPartitionByKey key ps = ps ^? ix i
+  where murmur = Murmur32.asWord32 . Murmur32.hash32WithSeed 0x9747b28c
+        toPositive = (.&. 0x7fffffff)
+        numPartitions = length ps
+        x = fromIntegral $ toPositive $ murmur key
+        i = x `mod` numPartitions
 
 -- | Execute a produce request using the values in the state.
 send :: Leader -> [(TopicAndPartition, MessageSet)] -> Kafka ProduceResponse
