@@ -259,11 +259,6 @@ fetch' :: Handle -> FetchRequest -> Kafka FetchResponse
 fetch' h request =
     makeRequest (FetchRequest request) >>= doRequest h >>= expectResponse ExpectedFetch _FetchResponse
 
--- | Execute a fetch request and get the raw fetch response. Round-robins the
--- requests to addresses in the 'KafkaState'.
-fetch :: FetchRequest -> Kafka FetchResponse
-fetch request = withAnyHandle $ flip fetch' request
-
 -- | Extract out messages with their topics from a fetch response.
 fetchMessages :: FetchResponse -> [TopicAndMessage]
 fetchMessages fr = (fr ^.. fetchResponseFields . folded) >>= tam

@@ -42,7 +42,7 @@ specs = do
     prop "can fetch messages" $ do
       result <- run $ do
         offset <- getLastOffset EarliestTime 0 topic
-        fetch =<< fetchRequest offset 0 topic
+        withAnyHandle (\handle -> fetch' handle =<< fetchRequest offset 0 topic)
       result `shouldSatisfy` isRight
 
     prop "can roundtrip messages" $ \ms -> do
@@ -52,7 +52,7 @@ specs = do
         leader <- maybe (Leader Nothing) _palLeader <$> getRandPartition info
         offset <- getLastOffset LatestTime 0 topic
         void $ send leader [(TopicAndPartition topic 0, groupMessagesToSet messages)]
-        fmap tamPayload . fetchMessages <$> (fetch =<< fetchRequest offset 0 topic)
+        fmap tamPayload . fetchMessages <$> withAnyHandle (\handle -> fetch' handle =<< fetchRequest offset 0 topic)
       result `shouldBe` Right (tamPayload <$> messages)
 
   describe "withAddressHandle" $ do
