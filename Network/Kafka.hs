@@ -21,6 +21,8 @@ import Data.Serialize.Get
 import System.IO
 import qualified Data.ByteString.Char8 as B
 import qualified Data.Map as M
+import Data.Set (Set)
+import qualified Data.Set as Set
 import qualified Network
 import Prelude
 
@@ -90,7 +92,7 @@ data PartitionAndLeader = PartitionAndLeader { _palTopic :: TopicName
                                              , _palPartition :: Partition
                                              , _palLeader :: Leader
                                              }
-                                             deriving (Show)
+                                             deriving (Show, Eq, Ord)
 
 makeLenses ''PartitionAndLeader
 
@@ -191,11 +193,11 @@ doRequest h r = do
 runGetKafka :: Get a -> ByteString -> Kafka a
 runGetKafka g bs = lift $ withExceptT KafkaDeserializationError $ ExceptT $ return $ runGet g bs
 
--- | Send a metadata request
+-- | Send a metadata request to any broker.
 metadata :: MetadataRequest -> Kafka MetadataResponse
 metadata request = withAnyHandle $ flip metadata' request
 
--- | Send a metadata request
+-- | Send a metadata request.
 metadata' :: Handle -> MetadataRequest -> Kafka MetadataResponse
 metadata' h request =
     makeRequest (MetadataRequest request) >>= doRequest h >>= expectResponse ExpectedMetadata _MetadataResponse
@@ -211,11 +213,11 @@ expect :: KafkaClientError -> (a -> Maybe b) -> a -> Kafka b
 expect e f = lift . maybe (throwError e) return . f
 
 -- | Find a leader and partition for the topic.
-brokerPartitionInfo :: TopicName -> Kafka [PartitionAndLeader]
+brokerPartitionInfo :: TopicName -> Kafka (Set PartitionAndLeader)
 brokerPartitionInfo t = do
   let s = stateTopicMetadata . at t
   tmd <- findMetadataOrElse [t] s KafkaFailedToFetchMetadata
-  return $ pal <$> tmd ^. partitionsMetadata
+  return $ Set.fromList $ pal <$> tmd ^. partitionsMetadata
     where pal d = PartitionAndLeader t (d ^. partitionId) (d ^. partitionMetadataLeader)
 
 findMetadataOrElse :: [TopicName] -> Getting (Maybe a) KafkaState (Maybe a) -> KafkaClientError -> Kafka a
@@ -239,30 +241,6 @@ protocolTime :: KafkaTime -> Time
 protocolTime LatestTime = Time (-1)
 protocolTime EarliestTime = Time (-2)
 protocolTime (OtherTime o) = o
-
--- * Fetching
-
--- | Default: @-1@
-ordinaryConsumerId :: ReplicaId
-ordinaryConsumerId = ReplicaId (-1)
-
--- | Construct a fetch request from the values in the state.
-fetchRequest :: Offset -> Partition -> TopicName -> Kafka FetchRequest
-fetchRequest o p topic = do
-  wt <- use stateWaitTime
-  ws <- use stateWaitSize
-  bs <- use stateBufferSize
-  return $ FetchReq (ordinaryConsumerId, wt, ws, [(topic, [(p, o, bs)])])
-
--- | Execute a fetch request and get the raw fetch response.
-fetch' :: Handle -> FetchRequest -> Kafka FetchResponse
-fetch' h request =
-    makeRequest (FetchRequest request) >>= doRequest h >>= expectResponse ExpectedFetch _FetchResponse
-
--- | Extract out messages with their topics from a fetch response.
-fetchMessages :: FetchResponse -> [TopicAndMessage]
-fetchMessages fr = (fr ^.. fetchResponseFields . folded) >>= tam
-    where tam a = TopicAndMessage (a ^. _1) <$> a ^.. _2 . folded . _4 . messageSetMembers . folded . setMessage
 
 updateMetadatas :: [TopicName] -> Kafka ()
 updateMetadatas ts = do

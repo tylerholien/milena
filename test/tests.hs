@@ -9,8 +9,9 @@ import Control.Lens
 import Control.Monad.Except (catchError, throwError)
 import Control.Monad.Trans (liftIO)
 import Network.Kafka
+import Network.Kafka.Consumer
 import Network.Kafka.Producer
-import Network.Kafka.Protocol (Leader(..))
+import Network.Kafka.Protocol (ProduceResponse(..), KafkaError(..))
 import Test.Tasty
 import Test.Tasty.Hspec
 import Test.Tasty.QuickCheck
@@ -25,6 +26,10 @@ specs :: Spec
 specs = do
   let topic = "milena-test"
       run = runKafka $ mkKafkaState "milena-test-client" ("localhost", 9092)
+      requireAllAcks = do
+        stateRequiredAcks .= -1
+        stateWaitSize .= 1
+        stateWaitTime .= 1000
       byteMessages = fmap (TopicAndMessage topic . makeMessage . B.pack)
 
   describe "can talk to local Kafka server" $ do
@@ -45,14 +50,30 @@ specs = do
         withAnyHandle (\handle -> fetch' handle =<< fetchRequest offset 0 topic)
       result `shouldSatisfy` isRight
 
-    prop "can roundtrip messages" $ \ms -> do
+    prop "can roundtrip messages" $ \ms key -> do
       let messages = byteMessages ms
       result <- run $ do
+        requireAllAcks
         info <- brokerPartitionInfo topic
-        leader <- maybe (Leader Nothing) _palLeader <$> getRandPartition info
-        offset <- getLastOffset LatestTime 0 topic
-        void $ send leader [(TopicAndPartition topic 0, groupMessagesToSet messages)]
-        fmap tamPayload . fetchMessages <$> withAnyHandle (\handle -> fetch' handle =<< fetchRequest offset 0 topic)
+        let Just PartitionAndLeader { _palLeader = leader, _palPartition = partition } = getPartitionByKey (B.pack key) info
+            payload = [(TopicAndPartition topic partition, groupMessagesToSet messages)]
+            s = stateBrokers . at leader
+        [(_topicName, [(_, NoError, offset)])] <- _produceResponseFields <$> send leader payload
+        broker <- findMetadataOrElse [topic] s (KafkaInvalidBroker leader)
+        resp <- withBrokerHandle broker (\handle -> fetch' handle =<< fetchRequest offset partition topic)
+        return $ fmap tamPayload . fetchMessages $ resp
+      result `shouldBe` Right (tamPayload <$> messages)
+
+    prop "can roundtrip keyed messages" $ \(NonEmpty ms) key -> do
+      let keyBytes = B.pack key
+          messages = fmap (TopicAndMessage topic . makeKeyedMessage keyBytes . B.pack) ms
+      result <- run $ do
+        requireAllAcks
+        produceResps <- produceMessages messages
+        let [[(_topicName, [(partition, NoError, offset)])]] = map _produceResponseFields produceResps
+
+        resp <- fetch offset partition topic
+        return $ fmap tamPayload . fetchMessages $ resp
       result `shouldBe` Right (tamPayload <$> messages)
 
   describe "withAddressHandle" $ do

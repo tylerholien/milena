@@ -7,6 +7,8 @@ import Control.Applicative
 import Control.Lens
 import Control.Monad.Trans (liftIO)
 import Data.Monoid ((<>))
+import Data.Set (Set)
+import qualified Data.Set as Set
 import System.IO
 import qualified Data.Map as M
 import System.Random (getStdRandom, randomR)
@@ -58,8 +60,8 @@ partitionAndCollate ks = recurse ks M.empty
 
 -- | Compute the partition for a record. This matches the way the official
 -- | clients compute the partition.
-getPartitionByKey :: ByteString -> [PartitionAndLeader] -> Maybe PartitionAndLeader
-getPartitionByKey key ps = ps ^? ix i
+getPartitionByKey :: ByteString -> Set PartitionAndLeader -> Maybe PartitionAndLeader
+getPartitionByKey key ps = Set.toAscList ps ^? ix i
   where murmur = Murmur32.asWord32 . Murmur32.hash32WithSeed 0x9747b28c
         toPositive = (.&. 0x7fffffff)
         numPartitions = length ps
@@ -76,7 +78,7 @@ send l ts = do
   requestTimeout <- use stateRequestTimeout
   withBrokerHandle broker $ \handle -> produce handle $ produceRequest requiredAcks requestTimeout ts
 
-getRandPartition :: [PartitionAndLeader] -> Kafka (Maybe PartitionAndLeader)
+getRandPartition :: Set PartitionAndLeader -> Kafka (Maybe PartitionAndLeader)
 getRandPartition ps =
     liftIO $ (ps' ^?) . element <$> getStdRandom (randomR (0, length ps' - 1))
         where ps' = ps ^.. folded . filtered (has $ palLeader . leaderId . _Just)
@@ -102,3 +104,7 @@ defaultMessageAttributes = 0
 -- | Construct a message from a string of bytes using default attributes.
 makeMessage :: ByteString -> Message
 makeMessage m = Message (defaultMessageCrc, defaultMessageMagicByte, defaultMessageAttributes, defaultMessageKey, Value (Just (KBytes m)))
+
+-- | Construct a message from a string of bytes using default attributes.
+makeKeyedMessage :: ByteString -> ByteString -> Message
+makeKeyedMessage k m = Message (defaultMessageCrc, defaultMessageMagicByte, defaultMessageAttributes, Key (Just (KBytes k)), Value (Just (KBytes m)))
