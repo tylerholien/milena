@@ -32,7 +32,7 @@ data Response = Response { _responseCorrelationId :: CorrelationId, _responseMes
 getResponse :: Int -> Get Response
 getResponse l = Response <$> deserialize <*> getResponseMessage (l - 4)
 
-newtype ConsumerMetadataResponse = ConsumerMetadataResp (KafkaError, Broker) deriving (Show, Eq, Deserializable) -- CoordinatorId CoordinatorHost CoordinatorPort
+newtype GroupCoordinatorResponse = GroupCoordinatorResp (KafkaError, Broker) deriving (Show, Eq, Deserializable) -- CoordinatorId CoordinatorHost CoordinatorPort
 -- newtype ErrorCode = ErrorCode int16
 -- newtype CoordinatorId = CoordinatorId int32
 -- newtype CoordinatorHost = CoordinatorHost string
@@ -44,7 +44,7 @@ getResponseMessage l = liftM MetadataResponse          (isolate l deserialize)
                    <|> liftM ProduceResponse           (isolate l deserialize)
                    <|> liftM OffsetCommitResponse      (isolate l deserialize)
                    <|> liftM OffsetFetchResponse       (isolate l deserialize)
-                   <|> liftM ConsumerMetadataResponse  (isolate l deserialize)
+                   <|> liftM GroupCoordinatorResponse  (isolate l deserialize)
                    -- MUST try FetchResponse last!
                    --
                    -- As an optimization, Kafka might return a partial message
@@ -69,7 +69,7 @@ data RequestMessage = MetadataRequest MetadataRequest
                     | OffsetRequest OffsetRequest
                     | OffsetCommitRequest OffsetCommitRequest
                     | OffsetFetchRequest OffsetFetchRequest
-                    | ConsumerMetadataRequest ConsumerMetadataRequest
+                    | GroupCoordinatorRequest GroupCoordinatorRequest
                     deriving (Show, Eq)
 
 newtype MetadataRequest = MetadataReq [TopicName] deriving (Show, Eq, Serializable, Deserializable)
@@ -159,10 +159,10 @@ data ResponseMessage = MetadataResponse MetadataResponse
                      | OffsetResponse OffsetResponse
                      | OffsetCommitResponse OffsetCommitResponse
                      | OffsetFetchResponse OffsetFetchResponse
-                     | ConsumerMetadataResponse ConsumerMetadataResponse
+                     | GroupCoordinatorResponse GroupCoordinatorResponse
                      deriving (Show, Eq)
 
-newtype ConsumerMetadataRequest = ConsumerMetadataReq ConsumerGroup deriving (Show, Eq, Serializable)
+newtype GroupCoordinatorRequest = GroupCoordinatorReq ConsumerGroup deriving (Show, Eq, Serializable)
 
 newtype OffsetCommitRequest = OffsetCommitReq (ConsumerGroup, [(TopicName, [(Partition, Offset, Time, Metadata)])]) deriving (Show, Eq, Serializable)
 newtype OffsetFetchRequest = OffsetFetchReq (ConsumerGroup, [(TopicName, [Partition])]) deriving (Show, Eq, Serializable)
@@ -259,7 +259,7 @@ apiKey (OffsetRequest{}) = ApiKey 2
 apiKey (MetadataRequest{}) = ApiKey 3
 apiKey (OffsetCommitRequest{}) = ApiKey 8
 apiKey (OffsetFetchRequest{}) = ApiKey 9
-apiKey (ConsumerMetadataRequest{}) = ApiKey 10
+apiKey (GroupCoordinatorRequest{}) = ApiKey 10
 
 instance Serializable RequestMessage where
   serialize (ProduceRequest r) = serialize r
@@ -268,7 +268,7 @@ instance Serializable RequestMessage where
   serialize (MetadataRequest r) = serialize r
   serialize (OffsetCommitRequest r) = serialize r
   serialize (OffsetFetchRequest r) = serialize r
-  serialize (ConsumerMetadataRequest r) = serialize r
+  serialize (GroupCoordinatorRequest r) = serialize r
 
 instance Serializable Int64 where serialize = putWord64be . fromIntegral
 instance Serializable Int32 where serialize = putWord32be . fromIntegral
