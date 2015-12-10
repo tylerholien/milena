@@ -56,34 +56,29 @@ ProtocolMetadata => Version Subscription UserData
 
 -}
 
-newtype JoinGroupResponse = JoinGroupResp (KafkaError, GenerationId, ProtocolName, LeaderId, GroupMemberId, Members) deriving (Show, Eq, Deserializable)
+data JoinGroupResponse = LeaderJoinGroupResp GenerationId ProtocolName GroupMemberId Members
+                       | FollowerJoinGroupResp GenerationId ProtocolName LeaderId GroupMemberId
+                       | JoinGroupRespFailure KafkaError
+                       deriving (Show, Eq)
 newtype GenerationId = GenerationId Int32 deriving (Show, Eq, Num, Serializable, Deserializable)
 type LeaderId = GroupMemberId
 type Members = [(GroupMemberId, MemberMetadata)]
 type MemberMetadata = ProtocolMetadata
 
--- instance Deserializable JoinGroupResponse where
---   deserialize = do
---     len <- remaining
---     bytes <- uncheckedLookAhead len
---     traceShowM bytes
---     e <- deserialize
---     genId <- deserialize
---     protoName <- deserialize
---     leaderId <- deserialize
---     myId <- deserialize
---     members <- getMembers
---     return $ JoinGroupResp (e, genId, protoName, leaderId, myId, members)
---     -- l <- deserialize :: Get Int32
---     -- ms <- isolate (fromIntegral l) getMembers
---     -- return $ MessageSet ms
---       where getMembers :: Get [(GroupMemberId, MemberMetadata)]
---             getMembers = do
---               wasEmpty <- isEmpty
---               if wasEmpty
---               then return []
---               else liftM2 (:) deserialize getMembers <|> (remaining >>= getBytes >> return [])
-
+instance Deserializable JoinGroupResponse where
+  deserialize = do
+    (e, genId, protoName, leaderId, myId, members) <- deserialize :: Get (KafkaError, GenerationId, ProtocolName, LeaderId, GroupMemberId, Members)
+    case e of
+      NoError -> case members of
+        [] -> return $ FollowerJoinGroupResp genId protoName leaderId myId
+        _ -> return $ LeaderJoinGroupResp genId protoName myId members
+      _ -> return $ JoinGroupRespFailure e
+      where getMembers :: Get [(GroupMemberId, MemberMetadata)]
+            getMembers = do
+              wasEmpty <- isEmpty
+              if wasEmpty
+              then return []
+              else liftM2 (:) deserialize getMembers <|> (remaining >>= getBytes >> return [])
 
 -- JoinGroupResponse => ErrorCode GroupGenerationId GroupLeaderId MemberId Members
 --   ErrorCode           => int16
