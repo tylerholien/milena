@@ -32,11 +32,69 @@ data Response = Response { _responseCorrelationId :: CorrelationId, _responseMes
 getResponse :: Int -> Get Response
 getResponse l = Response <$> deserialize <*> getResponseMessage (l - 4)
 
-newtype GroupCoordinatorResponse = GroupCoordinatorResp (KafkaError, Broker) deriving (Show, Eq, Deserializable) -- CoordinatorId CoordinatorHost CoordinatorPort
--- newtype ErrorCode = ErrorCode int16
--- newtype CoordinatorId = CoordinatorId int32
--- newtype CoordinatorHost = CoordinatorHost string
--- newtype CoordinatorPort = CoordinatorPort int32
+newtype GroupCoordinatorResponse = GroupCoordinatorResp (KafkaError, Broker) deriving (Show, Eq, Deserializable)
+
+newtype JoinGroupRequest = JoinGroupReq (ConsumerGroupId, Timeout, GroupMemberId, ProtocolType, GroupProtocols) deriving (Show, Eq, Serializable)
+newtype GroupMemberId = GroupMemberId KafkaString deriving (Show, Eq, Serializable, Deserializable, IsString)
+newtype ProtocolType = ProtocolType KafkaString deriving (Show, Eq, Serializable, Deserializable, IsString)
+type GroupProtocols = [(ProtocolName, ProtocolMetadata)]
+newtype ProtocolName = ProtocolName KafkaString deriving (Show, Eq, Serializable, Deserializable, IsString)
+newtype ProtocolMetadata = ProtocolMetadata KafkaBytes deriving (Show, Eq, Serializable, Deserializable, IsString)
+
+{-
+
+ProtocolType => "consumer"
+
+ProtocolName => AssignmentStrategy
+  AssignmentStrategy => string
+
+ProtocolMetadata => Version Subscription UserData
+  Version => int16
+  Subscription => [Topic]
+    Topic => string
+  UserData => bytes
+
+-}
+
+newtype JoinGroupResponse = JoinGroupResp (KafkaError, GenerationId, ProtocolName, LeaderId, GroupMemberId, Members) deriving (Show, Eq, Deserializable)
+newtype GenerationId = GenerationId Int32 deriving (Show, Eq, Num, Serializable, Deserializable)
+type LeaderId = GroupMemberId
+type Members = [(GroupMemberId, MemberMetadata)]
+type MemberMetadata = ProtocolMetadata
+
+-- instance Deserializable JoinGroupResponse where
+--   deserialize = do
+--     len <- remaining
+--     bytes <- uncheckedLookAhead len
+--     traceShowM bytes
+--     e <- deserialize
+--     genId <- deserialize
+--     protoName <- deserialize
+--     leaderId <- deserialize
+--     myId <- deserialize
+--     members <- getMembers
+--     return $ JoinGroupResp (e, genId, protoName, leaderId, myId, members)
+--     -- l <- deserialize :: Get Int32
+--     -- ms <- isolate (fromIntegral l) getMembers
+--     -- return $ MessageSet ms
+--       where getMembers :: Get [(GroupMemberId, MemberMetadata)]
+--             getMembers = do
+--               wasEmpty <- isEmpty
+--               if wasEmpty
+--               then return []
+--               else liftM2 (:) deserialize getMembers <|> (remaining >>= getBytes >> return [])
+
+
+-- JoinGroupResponse => ErrorCode GroupGenerationId GroupLeaderId MemberId Members
+--   ErrorCode           => int16
+--   GroupGenerationId   => int32
+--   GroupProtocol       => String
+--   GroupLeaderId       => String
+--   MemberId            => String
+--   Members             => [MemberId MemberMetadata]
+--     MemberId          => String
+--     MemberMetadata    => bytes
+
 
 getResponseMessage :: Int -> Get ResponseMessage
 getResponseMessage l = liftM MetadataResponse          (isolate l deserialize)
@@ -45,6 +103,7 @@ getResponseMessage l = liftM MetadataResponse          (isolate l deserialize)
                    <|> liftM OffsetCommitResponse      (isolate l deserialize)
                    <|> liftM OffsetFetchResponse       (isolate l deserialize)
                    <|> liftM GroupCoordinatorResponse  (isolate l deserialize)
+                   <|> liftM JoinGroupResponse         (isolate l deserialize)
                    -- MUST try FetchResponse last!
                    --
                    -- As an optimization, Kafka might return a partial message
@@ -70,6 +129,7 @@ data RequestMessage = MetadataRequest MetadataRequest
                     | OffsetCommitRequest OffsetCommitRequest
                     | OffsetFetchRequest OffsetFetchRequest
                     | GroupCoordinatorRequest GroupCoordinatorRequest
+                    | JoinGroupRequest JoinGroupRequest
                     deriving (Show, Eq)
 
 newtype MetadataRequest = MetadataReq [TopicName] deriving (Show, Eq, Serializable, Deserializable)
@@ -160,13 +220,14 @@ data ResponseMessage = MetadataResponse MetadataResponse
                      | OffsetCommitResponse OffsetCommitResponse
                      | OffsetFetchResponse OffsetFetchResponse
                      | GroupCoordinatorResponse GroupCoordinatorResponse
+                     | JoinGroupResponse JoinGroupResponse
                      deriving (Show, Eq)
 
-newtype GroupCoordinatorRequest = GroupCoordinatorReq ConsumerGroup deriving (Show, Eq, Serializable)
+newtype GroupCoordinatorRequest = GroupCoordinatorReq ConsumerGroupId deriving (Show, Eq, Serializable)
 
-newtype OffsetCommitRequest = OffsetCommitReq (ConsumerGroup, [(TopicName, [(Partition, Offset, Time, Metadata)])]) deriving (Show, Eq, Serializable)
-newtype OffsetFetchRequest = OffsetFetchReq (ConsumerGroup, [(TopicName, [Partition])]) deriving (Show, Eq, Serializable)
-newtype ConsumerGroup = ConsumerGroup KafkaString deriving (Show, Eq, Serializable, Deserializable, IsString)
+newtype OffsetCommitRequest = OffsetCommitReq (ConsumerGroupId, [(TopicName, [(Partition, Offset, Time, Metadata)])]) deriving (Show, Eq, Serializable)
+newtype OffsetFetchRequest = OffsetFetchReq (ConsumerGroupId, [(TopicName, [Partition])]) deriving (Show, Eq, Serializable)
+newtype ConsumerGroupId = ConsumerGroupId KafkaString deriving (Show, Eq, Serializable, Deserializable, IsString)
 newtype Metadata = Metadata KafkaString deriving (Show, Eq, Serializable, Deserializable, IsString)
 
 errorKafka :: KafkaError -> Int16
@@ -185,8 +246,23 @@ errorKafka MessageSizeTooLarge                 = 10
 errorKafka StaleControllerEpochCode            = 11
 errorKafka OffsetMetadataTooLargeCode          = 12
 errorKafka OffsetsLoadInProgressCode           = 14
-errorKafka ConsumerCoordinatorNotAvailableCode = 15
+errorKafka GroupCoordinatorNotAvailableCode    = 15
 errorKafka NotCoordinatorForConsumerCode       = 16
+errorKafka InvalidTopicCode                    = 17
+errorKafka RecordListTooLargeCode              = 18
+errorKafka NotEnoughReplicasCode               = 19
+errorKafka NotEnoughReplicasAfterAppendCode    = 20
+errorKafka InvalidRequiredAcksCode             = 21
+errorKafka IllegalGenerationCode               = 22
+errorKafka InconsistentGroupProtocolCode       = 23
+errorKafka InvalidGroupIdCode                  = 24
+errorKafka UnknownMemberIdCode                 = 25
+errorKafka InvalidSessionTimeoutCode           = 26
+errorKafka RebalanceInProgressCode             = 27
+errorKafka InvalidCommitOffsetSizeCode         = 28
+errorKafka TopicAuthorizationFailedCode        = 29
+errorKafka GroupAuthorizationFailedCode        = 30
+errorKafka ClusterAuthorizationFailedCode      = 31
 
 data KafkaError = NoError -- ^ @0@ No error--it worked!
                 | Unknown -- ^ @-1@ An unexpected server error
@@ -203,8 +279,23 @@ data KafkaError = NoError -- ^ @0@ No error--it worked!
                 | StaleControllerEpochCode -- ^ @11@ Internal error code for broker-to-broker communication.
                 | OffsetMetadataTooLargeCode -- ^ @12@ If you specify a string larger than configured maximum for offset metadata
                 | OffsetsLoadInProgressCode -- ^ @14@ The broker returns this error code for an offset fetch request if it is still loading offsets (after a leader change for that offsets topic partition).
-                | ConsumerCoordinatorNotAvailableCode -- ^ @15@ The broker returns this error code for consumer metadata requests or offset commit requests if the offsets topic has not yet been created.
+                | GroupCoordinatorNotAvailableCode -- ^ @15@ The broker returns this error code for group coordinator requests, offset commits, and most group management requests if the offsets topic has not yet been created, or if the group coordinator is not active.
                 | NotCoordinatorForConsumerCode -- ^ @16@ The broker returns this error code if it receives an offset fetch or commit request for a consumer group that it is not a coordinator for.
+                | InvalidTopicCode -- ^ @17@ For a request which attempts to access an invalid topic (e.g. one which has an illegal name), or if an attempt is made to write to an internal topic (such as the consumer offsets topic).
+                | RecordListTooLargeCode -- ^ @18@ If a message batch in a produce request exceeds the maximum configured segment size.
+                | NotEnoughReplicasCode -- ^ @19@ Returned from a produce request when the number of in-sync replicas is lower than the configured minimum and requiredAcks is -1.
+                | NotEnoughReplicasAfterAppendCode -- ^ @20@ Returned from a produce request when the message was written to the log, but with fewer in-sync replicas than required.
+                | InvalidRequiredAcksCode -- ^ @21@ Returned from a produce request if the requested requiredAcks is invalid (anything other than -1, 1, or 0).
+                | IllegalGenerationCode -- ^ @22@ Returned from group membership requests (such as heartbeats) when the generation id provided in the request is not the current generation.
+                | InconsistentGroupProtocolCode -- ^ @23@ Returned in join group when the member provides a protocol type or set of protocols which is not compatible with the current group.
+                | InvalidGroupIdCode -- ^ @24@ Returned in join group when the groupId is empty or null.
+                | UnknownMemberIdCode -- ^ @25@ Returned from group requests (offset commits/fetches, heartbeats, etc) when the memberId is not in the current generation.
+                | InvalidSessionTimeoutCode -- ^ @26@ Return in join group when the requested session timeout is outside of the allowed range on the broker
+                | RebalanceInProgressCode -- ^ @27@ Returned in heartbeat requests when the coordinator has begun rebalancing the group. This indicates to the client that it should rejoin the group.
+                | InvalidCommitOffsetSizeCode -- ^ @28@ This error indicates that an offset commit was rejected because of oversize metadata.
+                | TopicAuthorizationFailedCode -- ^ @29@ Returned by the broker when the client is not authorized to access the requested topic.
+                | GroupAuthorizationFailedCode -- ^ @30@ Returned by the broker when the client is not authorized to access a particular groupId.
+                | ClusterAuthorizationFailedCode -- ^ @31@ Returned by the broker when the client is not authorized to use an inter-broker or administrative API.
                 deriving (Eq, Show)
 
 instance Serializable KafkaError where
@@ -229,8 +320,23 @@ instance Deserializable KafkaError where
       11   -> return StaleControllerEpochCode
       12   -> return OffsetMetadataTooLargeCode
       14   -> return OffsetsLoadInProgressCode
-      15   -> return ConsumerCoordinatorNotAvailableCode
+      15   -> return GroupCoordinatorNotAvailableCode
       16   -> return NotCoordinatorForConsumerCode
+      17   -> return InvalidTopicCode
+      18   -> return RecordListTooLargeCode
+      19   -> return NotEnoughReplicasCode
+      20   -> return NotEnoughReplicasAfterAppendCode
+      21   -> return InvalidRequiredAcksCode
+      22   -> return IllegalGenerationCode
+      23   -> return InconsistentGroupProtocolCode
+      24   -> return InvalidGroupIdCode
+      25   -> return UnknownMemberIdCode
+      26   -> return InvalidSessionTimeoutCode
+      27   -> return RebalanceInProgressCode
+      28   -> return InvalidCommitOffsetSizeCode
+      29   -> return TopicAuthorizationFailedCode
+      30   -> return GroupAuthorizationFailedCode
+      31   -> return ClusterAuthorizationFailedCode
       _    -> fail $ "invalid error code: " ++ show x
 
 newtype Request = Request (CorrelationId, ClientId, RequestMessage) deriving (Show, Eq)
@@ -260,6 +366,7 @@ apiKey (MetadataRequest{}) = ApiKey 3
 apiKey (OffsetCommitRequest{}) = ApiKey 8
 apiKey (OffsetFetchRequest{}) = ApiKey 9
 apiKey (GroupCoordinatorRequest{}) = ApiKey 10
+apiKey (JoinGroupRequest{}) = ApiKey 11
 
 instance Serializable RequestMessage where
   serialize (ProduceRequest r) = serialize r
@@ -269,6 +376,7 @@ instance Serializable RequestMessage where
   serialize (OffsetCommitRequest r) = serialize r
   serialize (OffsetFetchRequest r) = serialize r
   serialize (GroupCoordinatorRequest r) = serialize r
+  serialize (JoinGroupRequest r) = serialize r
 
 instance Serializable Int64 where serialize = putWord64be . fromIntegral
 instance Serializable Int32 where serialize = putWord32be . fromIntegral
@@ -398,6 +506,8 @@ instance (Deserializable a, Deserializable b, Deserializable c, Deserializable d
   deserialize = liftM4 (,,,) deserialize deserialize deserialize deserialize
 instance (Deserializable a, Deserializable b, Deserializable c, Deserializable d, Deserializable e) => Deserializable ((,,,,) a b c d e) where
   deserialize = liftM5 (,,,,) deserialize deserialize deserialize deserialize deserialize
+instance (Deserializable a, Deserializable b, Deserializable c, Deserializable d, Deserializable e, Deserializable f) => Deserializable ((,,,,,) a b c d e f) where
+  deserialize = (,,,,,) <$> deserialize <*> deserialize <*> deserialize <*> deserialize <*> deserialize <*> deserialize
 
 instance Deserializable Int64 where deserialize = liftM fromIntegral getWord64be
 instance Deserializable Int32 where deserialize = liftM fromIntegral getWord32be

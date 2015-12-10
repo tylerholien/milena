@@ -77,6 +77,8 @@ data KafkaClientError = -- | A response did not contain an offset.
 -- | Type of response to expect, used for 'KafkaExpected' error.
 data KafkaExpectedResponse = ExpectedMetadata
                            | ExpectedFetch
+                           | ExpectedGroupCoordinator
+                           | ExpectedJoinGroup
                            | ExpectedProduce
                              deriving (Eq, Show)
 
