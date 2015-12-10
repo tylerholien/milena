@@ -1,4 +1,8 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE GADTs #-}
+{-# LANGUAGE KindSignatures #-}
+{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE Rank2Types #-}
@@ -34,10 +38,10 @@ getResponse l = Response <$> deserialize <*> getResponseMessage (l - 4)
 
 newtype GroupCoordinatorResponse = GroupCoordinatorResp (KafkaError, Broker) deriving (Show, Eq, Deserializable)
 
-newtype JoinGroupRequest = JoinGroupReq (ConsumerGroupId, Timeout, GroupMemberId, ProtocolType, GroupProtocols) deriving (Show, Eq, Serializable)
+newtype JoinGroupRequest a = JoinGroupReq (ConsumerGroupId, Timeout, GroupMemberId, ProtocolType, GroupProtocols a) deriving (Show, Eq, Serializable)
 newtype GroupMemberId = GroupMemberId KafkaString deriving (Show, Eq, Serializable, Deserializable, IsString)
 newtype ProtocolType = ProtocolType KafkaString deriving (Show, Eq, Serializable, Deserializable, IsString)
-type GroupProtocols = [(ProtocolName, ProtocolMetadata)]
+type GroupProtocols a = [(ProtocolName, a)]
 newtype ProtocolName = ProtocolName KafkaString deriving (Show, Eq, Serializable, Deserializable, IsString)
 newtype ProtocolMetadata = ProtocolMetadata KafkaBytes deriving (Show, Eq, Serializable, Deserializable, IsString)
 
@@ -73,12 +77,6 @@ instance Deserializable JoinGroupResponse where
         [] -> return $ FollowerJoinGroupResp genId protoName leaderId myId
         _ -> return $ LeaderJoinGroupResp genId protoName myId members
       _ -> return $ JoinGroupRespFailure e
-      where getMembers :: Get [(GroupMemberId, MemberMetadata)]
-            getMembers = do
-              wasEmpty <- isEmpty
-              if wasEmpty
-              then return []
-              else liftM2 (:) deserialize getMembers <|> (remaining >>= getBytes >> return [])
 
 -- JoinGroupResponse => ErrorCode GroupGenerationId GroupLeaderId MemberId Members
 --   ErrorCode           => int16
@@ -90,6 +88,20 @@ instance Deserializable JoinGroupResponse where
 --     MemberId          => String
 --     MemberMetadata    => bytes
 
+-- SyncGroupRequest => GroupId GenerationId MemberId GroupAssignment
+--   GroupId => string
+--   GenerationId => int32
+--   MemberId => string
+--   GroupAssignment => [MemberId MemberAssignment]
+--     MemberId => string
+--     MemberAssignment => bytes
+
+-- SyncGroupResponse => ErrorCode MemberState
+--   ErrorCode         => int16
+--   MemberState       => bytes
+
+newtype SyncGroupRequest = SyncGroupReq (ConsumerGroupId, GenerationId, GroupMemberId, [GroupAssignment MemberMetadata]) deriving (Show, Eq, Serializable)
+newtype GroupAssignment a = GroupAssignment (GroupMemberId, a) deriving (Show, Eq, Deserializable, Serializable)
 
 getResponseMessage :: Int -> Get ResponseMessage
 getResponseMessage l = liftM MetadataResponse          (isolate l deserialize)
@@ -117,15 +129,18 @@ newtype ApiVersion = ApiVersion Int16 deriving (Show, Eq, Deserializable, Serial
 newtype CorrelationId = CorrelationId Int32 deriving (Show, Eq, Deserializable, Serializable, Num, Enum)
 newtype ClientId = ClientId KafkaString deriving (Show, Eq, Deserializable, Serializable, IsString)
 
-data RequestMessage = MetadataRequest MetadataRequest
-                    | ProduceRequest ProduceRequest
-                    | FetchRequest FetchRequest
-                    | OffsetRequest OffsetRequest
-                    | OffsetCommitRequest OffsetCommitRequest
-                    | OffsetFetchRequest OffsetFetchRequest
-                    | GroupCoordinatorRequest GroupCoordinatorRequest
-                    | JoinGroupRequest JoinGroupRequest
-                    deriving (Show, Eq)
+data RequestMessage where
+  MetadataRequest :: MetadataRequest -> RequestMessage
+  ProduceRequest :: ProduceRequest -> RequestMessage
+  FetchRequest :: FetchRequest -> RequestMessage
+  OffsetRequest :: OffsetRequest -> RequestMessage
+  OffsetCommitRequest :: OffsetCommitRequest -> RequestMessage
+  OffsetFetchRequest :: OffsetFetchRequest -> RequestMessage
+  GroupCoordinatorRequest :: GroupCoordinatorRequest -> RequestMessage
+  JoinGroupRequest :: (Serializable a, Eq a, Show a) => JoinGroupRequest a -> RequestMessage
+deriving instance Show RequestMessage
+instance Eq RequestMessage where
+  x == y = x == y
 
 newtype MetadataRequest = MetadataReq [TopicName] deriving (Show, Eq, Serializable, Deserializable)
 newtype TopicName = TName { _tName :: KafkaString } deriving (Show, Eq, Ord, Deserializable, Serializable, IsString)

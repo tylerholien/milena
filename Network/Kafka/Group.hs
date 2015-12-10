@@ -15,7 +15,7 @@ groupCoordinator' :: Handle -> GroupCoordinatorRequest -> Kafka GroupCoordinator
 groupCoordinator' h request =
     makeRequest (GroupCoordinatorRequest request) >>= doRequest h >>= expectResponse ExpectedGroupCoordinator _GroupCoordinatorResponse
 
-joinGroup' :: Handle -> JoinGroupRequest -> Kafka JoinGroupResponse
+joinGroup' :: (Show a, Eq a, Serializable a) => Handle -> JoinGroupRequest a -> Kafka JoinGroupResponse
 joinGroup' h request =
   makeRequest (JoinGroupRequest request) >>= doRequest h >>= expectResponse ExpectedJoinGroup _JoinGroupResponse
 
