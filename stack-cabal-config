@@ -1,0 +1,10 @@
+#!/bin/bash
+ghc_version="7.10.1"
+[ -z "$1" ] || ghc_version="$1"; shift
+cabal configure --package-db=clear \
+                --package-db=global \
+                --package-db="$(stack --no-system-ghc path --snapshot-pkg-db)" \
+                --package-db="$(stack --no-system-ghc path --local-pkg-db)" \
+                --package-db="$(stack --no-system-ghc path --ghc-package-path)" \
+                --with-compiler="$(stack exec which ghc)" \
+                --enable-tests

@@ -45,21 +45,6 @@ type GroupProtocols a = [(ProtocolName, a)]
 newtype ProtocolName = ProtocolName KafkaString deriving (Show, Eq, Serializable, Deserializable, IsString)
 newtype ProtocolMetadata = ProtocolMetadata KafkaBytes deriving (Show, Eq, Serializable, Deserializable, IsString)
 
-{-
-
-ProtocolType => "consumer"
-
-ProtocolName => AssignmentStrategy
-  AssignmentStrategy => string
-
-ProtocolMetadata => Version Subscription UserData
-  Version => int16
-  Subscription => [Topic]
-    Topic => string
-  UserData => bytes
-
--}
-
 data JoinGroupResponse = LeaderJoinGroupResp GenerationId ProtocolName GroupMemberId Members
                        | FollowerJoinGroupResp GenerationId ProtocolName LeaderId GroupMemberId
                        | JoinGroupRespFailure KafkaError
@@ -78,30 +63,19 @@ instance Deserializable JoinGroupResponse where
         _ -> return $ LeaderJoinGroupResp genId protoName myId members
       _ -> return $ JoinGroupRespFailure e
 
--- JoinGroupResponse => ErrorCode GroupGenerationId GroupLeaderId MemberId Members
---   ErrorCode           => int16
---   GroupGenerationId   => int32
---   GroupProtocol       => String
---   GroupLeaderId       => String
---   MemberId            => String
---   Members             => [MemberId MemberMetadata]
---     MemberId          => String
---     MemberMetadata    => bytes
-
--- SyncGroupRequest => GroupId GenerationId MemberId GroupAssignment
---   GroupId => string
---   GenerationId => int32
---   MemberId => string
---   GroupAssignment => [MemberId MemberAssignment]
---     MemberId => string
---     MemberAssignment => bytes
-
--- SyncGroupResponse => ErrorCode MemberState
---   ErrorCode         => int16
---   MemberState       => bytes
-
-newtype SyncGroupRequest = SyncGroupReq (ConsumerGroupId, GenerationId, GroupMemberId, [GroupAssignment MemberMetadata]) deriving (Show, Eq, Serializable)
+newtype SyncGroupRequest a = SyncGroupReq (ConsumerGroupId, GenerationId, GroupMemberId, [GroupAssignment a]) deriving (Show, Eq, Serializable)
 newtype GroupAssignment a = GroupAssignment (GroupMemberId, a) deriving (Show, Eq, Deserializable, Serializable)
+
+data SyncGroupResponse a = SyncGroupResp a
+                         | SyncGroupRespFailure KafkaError
+                         deriving (Show, Eq)
+
+instance Deserializable a => Deserializable (SyncGroupResponse a) where
+  deserialize = do
+    (e, x) <- deserialize
+    case e of
+      NoError -> return $ SyncGroupResp x
+      _       -> return $ SyncGroupRespFailure e
 
 getResponseMessage :: Int -> Get ResponseMessage
 getResponseMessage l = liftM MetadataResponse          (isolate l deserialize)
@@ -122,7 +96,7 @@ getResponseMessage l = liftM MetadataResponse          (isolate l deserialize)
                    -- at the beginning of a MessageSet. I don't want to spend
                    -- the time right now to prove that will always be safe, but
                    -- I'd like to at some point.
-                   <|> liftM FetchResponse        (isolate l deserialize)
+                   <|> liftM FetchResponse             (isolate l deserialize)
 
 newtype ApiKey = ApiKey Int16 deriving (Show, Eq, Deserializable, Serializable, Num) -- numeric ID for API (i.e. metadata req, produce req, etc.)
 newtype ApiVersion = ApiVersion Int16 deriving (Show, Eq, Deserializable, Serializable, Num)
