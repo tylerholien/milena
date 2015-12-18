@@ -1,14 +1,18 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE Rank2Types #-}
 
-module Network.Kafka.Protocol where
+module Network.Kafka.Protocol
+  ( module Network.Kafka.Protocol
+  ) where
 
 import Control.Applicative
 import Control.Category (Category(..))
 import Control.Lens
-import Control.Monad (replicateM, liftM, liftM2, liftM3, liftM4, liftM5)
+import Control.Monad (replicateM, liftM, liftM2, liftM3, liftM4, liftM5, unless)
+import Control.Monad.IO.Class (MonadIO, liftIO)
 import Data.ByteString.Char8 (ByteString)
 import Data.ByteString.Lens (unpackedChars)
 import Data.Digest.CRC32
@@ -16,10 +20,38 @@ import Data.Int
 import Data.Serialize.Get
 import Data.Serialize.Put
 import GHC.Exts (IsString(..))
+import System.IO
 import Numeric.Lens
 import Prelude hiding ((.), id)
 import qualified Data.ByteString.Char8 as B
 import qualified Network
+
+data ReqResp a where
+  MetadataRR :: MonadIO m => MetadataRequest -> ReqResp (m MetadataResponse)
+  ProduceRR  :: MonadIO m => ProduceRequest  -> ReqResp (m ProduceResponse)
+  FetchRR    :: MonadIO m => FetchRequest    -> ReqResp (m FetchResponse)
+  OffsetRR   :: MonadIO m => OffsetRequest   -> ReqResp (m OffsetResponse)
+
+doRequest' :: (Deserializable a, MonadIO m) => CorrelationId -> Handle -> Request -> m (Either String a)
+doRequest' correlationId h r = do
+  rawLength <- liftIO $ do
+    B.hPut h $ requestBytes r
+    hFlush h
+    B.hGet h 4
+  case runGet (liftM fromIntegral getWord32be) rawLength of
+    Left s -> return $ Left s
+    Right dataLength -> do
+      responseBytes <- liftIO $ B.hGet h dataLength
+      return $ flip runGet responseBytes $ do
+        correlationId' <- deserialize
+        unless (correlationId == correlationId') $ fail ("Expected " ++ show correlationId ++ " but got " ++ show correlationId')
+        isolate (dataLength - 4) deserialize
+
+doRequest :: MonadIO m => ClientId -> CorrelationId -> Handle -> ReqResp (m a) -> m (Either String a)
+doRequest clientId correlationId h (MetadataRR req) = doRequest' correlationId h $ Request (correlationId, clientId, MetadataRequest req)
+doRequest clientId correlationId h (ProduceRR req)  = doRequest' correlationId h $ Request (correlationId, clientId, ProduceRequest req)
+doRequest clientId correlationId h (FetchRR req)    = doRequest' correlationId h $ Request (correlationId, clientId, FetchRequest req)
+doRequest clientId correlationId h (OffsetRR req)   = doRequest' correlationId h $ Request (correlationId, clientId, OffsetRequest req)
 
 class Serializable a where
   serialize :: a -> Put
@@ -27,36 +59,7 @@ class Serializable a where
 class Deserializable a where
   deserialize :: Get a
 
-data Response = Response { _responseCorrelationId :: CorrelationId, _responseMessage :: ResponseMessage } deriving (Show, Eq)
-
-getResponse :: Int -> Get Response
-getResponse l = Response <$> deserialize <*> getResponseMessage (l - 4)
-
-newtype GroupCoordinatorResponse = GroupCoordinatorResp (KafkaError, Broker) deriving (Show, Eq, Deserializable) -- CoordinatorId CoordinatorHost CoordinatorPort
--- newtype ErrorCode = ErrorCode int16
--- newtype CoordinatorId = CoordinatorId int32
--- newtype CoordinatorHost = CoordinatorHost string
--- newtype CoordinatorPort = CoordinatorPort int32
-
-getResponseMessage :: Int -> Get ResponseMessage
-getResponseMessage l = liftM MetadataResponse          (isolate l deserialize)
-                   <|> liftM OffsetResponse            (isolate l deserialize)
-                   <|> liftM ProduceResponse           (isolate l deserialize)
-                   <|> liftM OffsetCommitResponse      (isolate l deserialize)
-                   <|> liftM OffsetFetchResponse       (isolate l deserialize)
-                   <|> liftM GroupCoordinatorResponse  (isolate l deserialize)
-                   -- MUST try FetchResponse last!
-                   --
-                   -- As an optimization, Kafka might return a partial message
-                   -- at the end of a MessageSet, so this will consume the rest
-                   -- of the message at the end of the input.
-                   --
-                   -- Strictly speaking, this might not actually be necessary.
-                   -- Parsing a MessageSet is isolated to the byte count that's
-                   -- at the beginning of a MessageSet. I don't want to spend
-                   -- the time right now to prove that will always be safe, but
-                   -- I'd like to at some point.
-                   <|> liftM FetchResponse        (isolate l deserialize)
+newtype GroupCoordinatorResponse = GroupCoordinatorResp (KafkaError, Broker) deriving (Show, Eq, Deserializable)
 
 newtype ApiKey = ApiKey Int16 deriving (Show, Eq, Deserializable, Serializable, Num, Integral, Ord, Real, Enum) -- numeric ID for API (i.e. metadata req, produce req, etc.)
 newtype ApiVersion = ApiVersion Int16 deriving (Show, Eq, Deserializable, Serializable, Num, Integral, Ord, Real, Enum)
@@ -405,8 +408,6 @@ instance Deserializable Int16 where deserialize = liftM fromIntegral getWord16be
 instance Deserializable Int8  where deserialize = liftM fromIntegral getWord8
 
 -- * Generated lenses
-
-makeLenses ''Response
 
 makeLenses ''TopicName
 
