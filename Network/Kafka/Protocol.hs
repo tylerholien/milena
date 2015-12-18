@@ -58,9 +58,9 @@ getResponseMessage l = liftM MetadataResponse          (isolate l deserialize)
                    -- I'd like to at some point.
                    <|> liftM FetchResponse        (isolate l deserialize)
 
-newtype ApiKey = ApiKey Int16 deriving (Show, Eq, Deserializable, Serializable, Num) -- numeric ID for API (i.e. metadata req, produce req, etc.)
-newtype ApiVersion = ApiVersion Int16 deriving (Show, Eq, Deserializable, Serializable, Num)
-newtype CorrelationId = CorrelationId Int32 deriving (Show, Eq, Deserializable, Serializable, Num, Enum)
+newtype ApiKey = ApiKey Int16 deriving (Show, Eq, Deserializable, Serializable, Num, Integral, Ord, Real, Enum) -- numeric ID for API (i.e. metadata req, produce req, etc.)
+newtype ApiVersion = ApiVersion Int16 deriving (Show, Eq, Deserializable, Serializable, Num, Integral, Ord, Real, Enum)
+newtype CorrelationId = CorrelationId Int32 deriving (Show, Eq, Deserializable, Serializable, Num, Integral, Ord, Real, Enum)
 newtype ClientId = ClientId KafkaString deriving (Show, Eq, Deserializable, Serializable, IsString)
 
 data RequestMessage = MetadataRequest MetadataRequest
@@ -96,9 +96,9 @@ newtype FetchResponse =
 
 newtype MetadataResponse = MetadataResp { _metadataResponseFields :: ([Broker], [TopicMetadata]) } deriving (Show, Eq, Deserializable)
 newtype Broker = Broker { _brokerFields :: (NodeId, Host, Port) } deriving (Show, Eq, Ord, Deserializable)
-newtype NodeId = NodeId { _nodeId :: Int32 } deriving (Show, Eq, Ord, Deserializable, Num)
+newtype NodeId = NodeId { _nodeId :: Int32 } deriving (Show, Eq, Deserializable, Num, Integral, Ord, Real, Enum)
 newtype Host = Host { _hostKString :: KafkaString } deriving (Show, Eq, Ord, Deserializable, IsString)
-newtype Port = Port { _portInt :: Int32 } deriving (Show, Eq, Ord, Deserializable, Num)
+newtype Port = Port { _portInt :: Int32 } deriving (Show, Eq, Deserializable, Num, Integral, Ord, Real, Enum)
 newtype TopicMetadata = TopicMetadata { _topicMetadataFields :: (KafkaError, TopicName, [PartitionMetadata]) } deriving (Show, Eq, Deserializable)
 newtype PartitionMetadata = PartitionMetadata { _partitionMetadataFields :: (KafkaError, Partition, Leader, Replicas, Isr) } deriving (Show, Eq, Deserializable)
 newtype Leader = Leader { _leaderId :: Maybe Int32 } deriving (Show, Eq, Ord)
@@ -110,18 +110,18 @@ newtype OffsetCommitResponse = OffsetCommitResp [(TopicName, [(Partition, KafkaE
 newtype OffsetFetchResponse = OffsetFetchResp [(TopicName, [(Partition, Offset, Metadata, KafkaError)])] deriving (Show, Eq, Deserializable)
 
 newtype OffsetRequest = OffsetReq (ReplicaId, [(TopicName, [(Partition, Time, MaxNumberOfOffsets)])]) deriving (Show, Eq, Serializable)
-newtype Time = Time { _timeInt :: Int64 } deriving (Show, Eq, Serializable, Num, Bounded)
-newtype MaxNumberOfOffsets = MaxNumberOfOffsets Int32 deriving (Show, Eq, Serializable, Num)
+newtype Time = Time { _timeInt :: Int64 } deriving (Show, Eq, Serializable, Num, Integral, Ord, Real, Enum, Bounded)
+newtype MaxNumberOfOffsets = MaxNumberOfOffsets Int32 deriving (Show, Eq, Serializable, Num, Integral, Ord, Real, Enum)
 
 newtype FetchRequest =
   FetchReq (ReplicaId, MaxWaitTime, MinBytes,
             [(TopicName, [(Partition, Offset, MaxBytes)])])
   deriving (Show, Eq, Deserializable, Serializable)
 
-newtype ReplicaId = ReplicaId Int32 deriving (Show, Eq, Num, Serializable, Deserializable)
-newtype MaxWaitTime = MaxWaitTime Int32 deriving (Show, Eq, Num, Serializable, Deserializable)
-newtype MinBytes = MinBytes Int32 deriving (Show, Eq, Num, Serializable, Deserializable)
-newtype MaxBytes = MaxBytes Int32 deriving (Show, Eq, Num, Serializable, Deserializable)
+newtype ReplicaId = ReplicaId Int32 deriving (Show, Eq, Num, Integral, Ord, Real, Enum, Serializable, Deserializable)
+newtype MaxWaitTime = MaxWaitTime Int32 deriving (Show, Eq, Num, Integral, Ord, Real, Enum, Serializable, Deserializable)
+newtype MinBytes = MinBytes Int32 deriving (Show, Eq, Num, Integral, Ord, Real, Enum, Serializable, Deserializable)
+newtype MaxBytes = MaxBytes Int32 deriving (Show, Eq, Num, Integral, Ord, Real, Enum, Serializable, Deserializable)
 
 newtype ProduceRequest =
   ProduceReq (RequiredAcks, Timeout,
@@ -129,26 +129,26 @@ newtype ProduceRequest =
   deriving (Show, Eq, Serializable)
 
 newtype RequiredAcks =
-  RequiredAcks Int16 deriving (Show, Eq, Serializable, Deserializable, Num)
+  RequiredAcks Int16 deriving (Show, Eq, Serializable, Deserializable, Num, Integral, Ord, Real, Enum)
 newtype Timeout =
-  Timeout Int32 deriving (Show, Eq, Serializable, Deserializable, Num)
+  Timeout Int32 deriving (Show, Eq, Serializable, Deserializable, Num, Integral, Ord, Real, Enum)
 newtype Partition =
-  Partition Int32 deriving (Show, Ord, Eq, Serializable, Deserializable, Num)
+  Partition Int32 deriving (Show, Eq, Serializable, Deserializable, Num, Integral, Ord, Real, Enum)
 
 newtype MessageSet =
   MessageSet { _messageSetMembers :: [MessageSetMember] } deriving (Show, Eq)
 data MessageSetMember =
   MessageSetMember { _setOffset :: Offset, _setMessage :: Message } deriving (Show, Eq)
 
-newtype Offset = Offset Int64 deriving (Show, Eq, Serializable, Deserializable, Num)
+newtype Offset = Offset Int64 deriving (Show, Eq, Serializable, Deserializable, Num, Integral, Ord, Real, Enum)
 
 newtype Message =
   Message { _messageFields :: (Crc, MagicByte, Attributes, Key, Value) }
   deriving (Show, Eq, Deserializable)
 
-newtype Crc = Crc Int32 deriving (Show, Eq, Serializable, Deserializable, Num)
-newtype MagicByte = MagicByte Int8 deriving (Show, Eq, Serializable, Deserializable, Num)
-newtype Attributes = Attributes Int8 deriving (Show, Eq, Serializable, Deserializable, Num)
+newtype Crc = Crc Int32 deriving (Show, Eq, Serializable, Deserializable, Num, Integral, Ord, Real, Enum)
+newtype MagicByte = MagicByte Int8 deriving (Show, Eq, Serializable, Deserializable, Num, Integral, Ord, Real, Enum)
+newtype Attributes = Attributes Int8 deriving (Show, Eq, Serializable, Deserializable, Num, Integral, Ord, Real, Enum)
 
 newtype Key = Key { _keyBytes :: Maybe KafkaBytes } deriving (Show, Eq)
 newtype Value = Value { _valueBytes :: Maybe KafkaBytes } deriving (Show, Eq)
