@@ -8,18 +8,16 @@ import Control.Applicative
 import Control.Exception (IOException)
 import Control.Exception.Lifted (catch)
 import Control.Lens
-import Control.Monad (liftM)
-import Control.Monad.Except (ExceptT(..), runExceptT, withExceptT, MonadError(..))
+import Control.Monad.Except (ExceptT(..), runExceptT, MonadError(..))
 import Control.Monad.Trans (liftIO, lift)
 import Control.Monad.Trans.State
+import Control.Monad.State.Class (MonadState)
 import Data.ByteString.Char8 (ByteString)
 import Data.List.NonEmpty (NonEmpty(..))
 import qualified Data.List.NonEmpty as NE
 import Data.Monoid ((<>))
 import qualified Data.Pool as Pool
-import Data.Serialize.Get
 import System.IO
-import qualified Data.ByteString.Char8 as B
 import qualified Data.Map as M
 import Data.Set (Set)
 import qualified Data.Set as Set
@@ -64,8 +62,6 @@ type KafkaClientId = KafkaString
 -- | Errors given from the Kafka monad.
 data KafkaClientError = -- | A response did not contain an offset.
                         KafkaNoOffset
-                        -- | Got a different form of a response than was requested.
-                      | KafkaExpected KafkaExpectedResponse
                         -- | A value could not be deserialized correctly.
                       | KafkaDeserializationError String -- TODO: cereal is Stringly typed, should use tickle
                         -- | Could not find a cached broker for the found leader.
@@ -73,14 +69,6 @@ data KafkaClientError = -- | A response did not contain an offset.
                       | KafkaFailedToFetchMetadata
                       | KafkaIOException IOException
                         deriving (Eq, Show)
-
--- | Type of response to expect, used for 'KafkaExpected' error.
-data KafkaExpectedResponse = ExpectedMetadata
-                           | ExpectedFetch
-                           | ExpectedGroupCoordinator
-                           | ExpectedJoinGroup
-                           | ExpectedProduce
-                             deriving (Eq, Show)
 
 -- | An abstract form of Kafka's time. Used for querying offsets.
 data KafkaTime = -- | The latest time on the broker.
@@ -166,34 +154,25 @@ addKafkaAddress = over stateAddresses . NE.nub .: cons
 runKafka :: KafkaState -> Kafka a -> IO (Either KafkaClientError a)
 runKafka s k = runExceptT $ evalStateT k s
 
--- | Make a request, incrementing the `_stateCorrelationId`.
-makeRequest :: RequestMessage -> Kafka Request
-makeRequest m = do
-  corid <- use stateCorrelationId
-  stateCorrelationId += 1
-  conid <- use stateName
-  return $ Request (corid, ClientId conid, m)
-
--- | Catch 'IOException's and wrap them in 'KafkaIOException's.
-tryKafkaIO :: IO a -> Kafka a
-tryKafkaIO = tryKafka . liftIO
-
 -- | Catch 'IOException's and wrap them in 'KafkaIOException's.
 tryKafka :: Kafka a -> Kafka a
 tryKafka = (`catch` \e -> lift . throwError $ KafkaIOException (e :: IOException))
 
-doRequest :: Handle -> Request -> Kafka Response
-doRequest h r = do
-  rawLength <- tryKafkaIO $ do
-    B.hPut h $ requestBytes r
-    hFlush h
-    B.hGet h 4
-  dataLength <- runGetKafka (liftM fromIntegral getWord32be) rawLength
-  resp <- tryKafkaIO $ B.hGet h dataLength
-  runGetKafka (getResponse dataLength) resp
-
-runGetKafka :: Get a -> ByteString -> Kafka a
-runGetKafka g bs = lift $ withExceptT KafkaDeserializationError $ ExceptT $ return $ runGet g bs
+-- | Make a request, incrementing the `_stateCorrelationId`.
+makeRequest :: Handle -> ReqResp (Kafka a) -> Kafka a
+makeRequest h reqresp = do
+  (clientId, correlationId) <- makeIds
+  eitherResp <- tryKafka $ doRequest clientId correlationId h reqresp
+  case eitherResp of
+    Left s -> throwError $ KafkaDeserializationError s
+    Right r -> return r
+  where
+    makeIds :: MonadState KafkaState m => m (ClientId, CorrelationId)
+    makeIds = do
+      corid <- use stateCorrelationId
+      stateCorrelationId += 1
+      conid <- use stateName
+      return (ClientId conid, corid)
 
 -- | Send a metadata request to any broker.
 metadata :: MetadataRequest -> Kafka MetadataResponse
@@ -201,8 +180,7 @@ metadata request = withAnyHandle $ flip metadata' request
 
 -- | Send a metadata request.
 metadata' :: Handle -> MetadataRequest -> Kafka MetadataResponse
-metadata' h request =
-    makeRequest (MetadataRequest request) >>= doRequest h >>= expectResponse ExpectedMetadata _MetadataResponse
+metadata' h request = makeRequest h $ MetadataRR request
 
 getTopicPartitionLeader :: TopicName -> Partition -> Kafka Broker
 getTopicPartitionLeader t p = do
@@ -233,10 +211,6 @@ findMetadataOrElse ts s err = do
       case maybeFound' of
         Just x -> return x
         Nothing -> lift $ throwError err
-
--- | Function to give an error when the response seems wrong.
-expectResponse :: KafkaExpectedResponse -> Getting (Leftmost b) ResponseMessage b -> Response -> Kafka b
-expectResponse e p = expect (KafkaExpected e) (firstOf $ responseMessage . p)
 
 -- | Convert an abstract time to a serializable protocol value.
 protocolTime :: KafkaTime -> Time
@@ -291,7 +265,7 @@ withAddressHandle address kafkaAction = do
   let foundPool = conns ^. at address
   pool <- case foundPool of
     Nothing -> do
-      newPool <- tryKafkaIO $ mkPool address
+      newPool <- tryKafka $ liftIO $ mkPool address
       stateConnections .= (at address ?~ newPool $ conns)
       return newPool
     Just p -> return p
@@ -340,12 +314,15 @@ getLastOffset m p t = do
 
 -- | Get the first found offset.
 getLastOffset' :: Handle -> KafkaTime -> Partition -> TopicName -> Kafka Offset
-getLastOffset' h m p t =
-    makeRequest (offsetRequest [(TopicAndPartition t p, PartitionOffsetRequestInfo m 1)]) >>= doRequest h >>= maybe (StateT . const $ throwError KafkaNoOffset) return . firstOf (responseMessage . _OffsetResponse . offsetResponseOffset p)
+getLastOffset' h m p t = do
+  let offsetRR = OffsetRR $ offsetRequest [(TopicAndPartition t p, PartitionOffsetRequestInfo m 1)]
+  offsetResponse <- makeRequest h offsetRR
+  let maybeResp = firstOf (offsetResponseOffset p) offsetResponse
+  maybe (throwError KafkaNoOffset) return maybeResp
 
 -- | Create an offset request.
-offsetRequest :: [(TopicAndPartition, PartitionOffsetRequestInfo)] -> RequestMessage
+offsetRequest :: [(TopicAndPartition, PartitionOffsetRequestInfo)] -> OffsetRequest
 offsetRequest ts =
-    OffsetRequest $ OffsetReq (ReplicaId (-1), M.toList . M.unionsWith (<>) $ fmap f ts)
+    OffsetReq (ReplicaId (-1), M.toList . M.unionsWith (<>) $ fmap f ts)
         where f (TopicAndPartition t p, i) = M.singleton t [g p i]
               g p (PartitionOffsetRequestInfo kt mno) = (p, protocolTime kt, mno)

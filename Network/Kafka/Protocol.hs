@@ -7,12 +7,15 @@
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE Rank2Types #-}
 
-module Network.Kafka.Protocol where
+module Network.Kafka.Protocol
+  ( module Network.Kafka.Protocol
+  ) where
 
 import Control.Applicative
 import Control.Category (Category(..))
 import Control.Lens
-import Control.Monad (replicateM, liftM, liftM2, liftM3, liftM4, liftM5)
+import Control.Monad (replicateM, liftM, liftM2, liftM3, liftM4, liftM5, unless)
+import Control.Monad.IO.Class (MonadIO, liftIO)
 import Data.ByteString.Char8 (ByteString)
 import Data.ByteString.Lens (unpackedChars)
 import Data.Digest.CRC32
@@ -20,10 +23,38 @@ import Data.Int
 import Data.Serialize.Get
 import Data.Serialize.Put
 import GHC.Exts (IsString(..))
+import System.IO
 import Numeric.Lens
 import Prelude hiding ((.), id)
 import qualified Data.ByteString.Char8 as B
 import qualified Network
+
+data ReqResp a where
+  MetadataRR :: MonadIO m => MetadataRequest -> ReqResp (m MetadataResponse)
+  ProduceRR  :: MonadIO m => ProduceRequest  -> ReqResp (m ProduceResponse)
+  FetchRR    :: MonadIO m => FetchRequest    -> ReqResp (m FetchResponse)
+  OffsetRR   :: MonadIO m => OffsetRequest   -> ReqResp (m OffsetResponse)
+
+doRequest' :: (Deserializable a, MonadIO m) => CorrelationId -> Handle -> Request -> m (Either String a)
+doRequest' correlationId h r = do
+  rawLength <- liftIO $ do
+    B.hPut h $ requestBytes r
+    hFlush h
+    B.hGet h 4
+  case runGet (liftM fromIntegral getWord32be) rawLength of
+    Left s -> return $ Left s
+    Right dataLength -> do
+      responseBytes <- liftIO $ B.hGet h dataLength
+      return $ flip runGet responseBytes $ do
+        correlationId' <- deserialize
+        unless (correlationId == correlationId') $ fail ("Expected " ++ show correlationId ++ " but got " ++ show correlationId')
+        isolate (dataLength - 4) deserialize
+
+doRequest :: MonadIO m => ClientId -> CorrelationId -> Handle -> ReqResp (m a) -> m (Either String a)
+doRequest clientId correlationId h (MetadataRR req) = doRequest' correlationId h $ Request (correlationId, clientId, MetadataRequest req)
+doRequest clientId correlationId h (ProduceRR req)  = doRequest' correlationId h $ Request (correlationId, clientId, ProduceRequest req)
+doRequest clientId correlationId h (FetchRR req)    = doRequest' correlationId h $ Request (correlationId, clientId, FetchRequest req)
+doRequest clientId correlationId h (OffsetRR req)   = doRequest' correlationId h $ Request (correlationId, clientId, OffsetRequest req)
 
 class Serializable a where
   serialize :: a -> Put
@@ -31,20 +62,12 @@ class Serializable a where
 class Deserializable a where
   deserialize :: Get a
 
-data Response = Response { _responseCorrelationId :: CorrelationId, _responseMessage :: ResponseMessage } deriving (Show, Eq)
-
-getResponse :: Int -> Get Response
-getResponse l = Response <$> deserialize <*> getResponseMessage (l - 4)
-
-newtype GroupCoordinatorResponse = GroupCoordinatorResp (KafkaError, Broker) deriving (Show, Eq, Deserializable)
-
 newtype JoinGroupRequest a = JoinGroupReq (ConsumerGroupId, Timeout, GroupMemberId, ProtocolType, GroupProtocols a) deriving (Show, Eq, Serializable)
 newtype GroupMemberId = GroupMemberId KafkaString deriving (Show, Eq, Serializable, Deserializable, IsString)
 newtype ProtocolType = ProtocolType KafkaString deriving (Show, Eq, Serializable, Deserializable, IsString)
 type GroupProtocols a = [(ProtocolName, a)]
 newtype ProtocolName = ProtocolName KafkaString deriving (Show, Eq, Serializable, Deserializable, IsString)
 newtype ProtocolMetadata = ProtocolMetadata KafkaBytes deriving (Show, Eq, Serializable, Deserializable, IsString)
-
 data JoinGroupResponse = LeaderJoinGroupResp GenerationId ProtocolName GroupMemberId Members
                        | FollowerJoinGroupResp GenerationId ProtocolName LeaderId GroupMemberId
                        | JoinGroupRespFailure KafkaError
@@ -77,30 +100,11 @@ instance Deserializable a => Deserializable (SyncGroupResponse a) where
       NoError -> return $ SyncGroupResp x
       _       -> return $ SyncGroupRespFailure e
 
-getResponseMessage :: Int -> Get ResponseMessage
-getResponseMessage l = liftM MetadataResponse          (isolate l deserialize)
-                   <|> liftM OffsetResponse            (isolate l deserialize)
-                   <|> liftM ProduceResponse           (isolate l deserialize)
-                   <|> liftM OffsetCommitResponse      (isolate l deserialize)
-                   <|> liftM OffsetFetchResponse       (isolate l deserialize)
-                   <|> liftM GroupCoordinatorResponse  (isolate l deserialize)
-                   <|> liftM JoinGroupResponse         (isolate l deserialize)
-                   -- MUST try FetchResponse last!
-                   --
-                   -- As an optimization, Kafka might return a partial message
-                   -- at the end of a MessageSet, so this will consume the rest
-                   -- of the message at the end of the input.
-                   --
-                   -- Strictly speaking, this might not actually be necessary.
-                   -- Parsing a MessageSet is isolated to the byte count that's
-                   -- at the beginning of a MessageSet. I don't want to spend
-                   -- the time right now to prove that will always be safe, but
-                   -- I'd like to at some point.
-                   <|> liftM FetchResponse             (isolate l deserialize)
+newtype GroupCoordinatorResponse = GroupCoordinatorResp (KafkaError, Broker) deriving (Show, Eq, Deserializable)
 
-newtype ApiKey = ApiKey Int16 deriving (Show, Eq, Deserializable, Serializable, Num) -- numeric ID for API (i.e. metadata req, produce req, etc.)
-newtype ApiVersion = ApiVersion Int16 deriving (Show, Eq, Deserializable, Serializable, Num)
-newtype CorrelationId = CorrelationId Int32 deriving (Show, Eq, Deserializable, Serializable, Num, Enum)
+newtype ApiKey = ApiKey Int16 deriving (Show, Eq, Deserializable, Serializable, Num, Integral, Ord, Real, Enum) -- numeric ID for API (i.e. metadata req, produce req, etc.)
+newtype ApiVersion = ApiVersion Int16 deriving (Show, Eq, Deserializable, Serializable, Num, Integral, Ord, Real, Enum)
+newtype CorrelationId = CorrelationId Int32 deriving (Show, Eq, Deserializable, Serializable, Num, Integral, Ord, Real, Enum)
 newtype ClientId = ClientId KafkaString deriving (Show, Eq, Deserializable, Serializable, IsString)
 
 data RequestMessage where
@@ -140,9 +144,9 @@ newtype FetchResponse =
 
 newtype MetadataResponse = MetadataResp { _metadataResponseFields :: ([Broker], [TopicMetadata]) } deriving (Show, Eq, Deserializable)
 newtype Broker = Broker { _brokerFields :: (NodeId, Host, Port) } deriving (Show, Eq, Ord, Deserializable)
-newtype NodeId = NodeId { _nodeId :: Int32 } deriving (Show, Eq, Ord, Deserializable, Num)
+newtype NodeId = NodeId { _nodeId :: Int32 } deriving (Show, Eq, Deserializable, Num, Integral, Ord, Real, Enum)
 newtype Host = Host { _hostKString :: KafkaString } deriving (Show, Eq, Ord, Deserializable, IsString)
-newtype Port = Port { _portInt :: Int32 } deriving (Show, Eq, Ord, Deserializable, Num)
+newtype Port = Port { _portInt :: Int32 } deriving (Show, Eq, Deserializable, Num, Integral, Ord, Real, Enum)
 newtype TopicMetadata = TopicMetadata { _topicMetadataFields :: (KafkaError, TopicName, [PartitionMetadata]) } deriving (Show, Eq, Deserializable)
 newtype PartitionMetadata = PartitionMetadata { _partitionMetadataFields :: (KafkaError, Partition, Leader, Replicas, Isr) } deriving (Show, Eq, Deserializable)
 newtype Leader = Leader { _leaderId :: Maybe Int32 } deriving (Show, Eq, Ord)
@@ -154,18 +158,18 @@ newtype OffsetCommitResponse = OffsetCommitResp [(TopicName, [(Partition, KafkaE
 newtype OffsetFetchResponse = OffsetFetchResp [(TopicName, [(Partition, Offset, Metadata, KafkaError)])] deriving (Show, Eq, Deserializable)
 
 newtype OffsetRequest = OffsetReq (ReplicaId, [(TopicName, [(Partition, Time, MaxNumberOfOffsets)])]) deriving (Show, Eq, Serializable)
-newtype Time = Time { _timeInt :: Int64 } deriving (Show, Eq, Serializable, Num, Bounded)
-newtype MaxNumberOfOffsets = MaxNumberOfOffsets Int32 deriving (Show, Eq, Serializable, Num)
+newtype Time = Time { _timeInt :: Int64 } deriving (Show, Eq, Serializable, Num, Integral, Ord, Real, Enum, Bounded)
+newtype MaxNumberOfOffsets = MaxNumberOfOffsets Int32 deriving (Show, Eq, Serializable, Num, Integral, Ord, Real, Enum)
 
 newtype FetchRequest =
   FetchReq (ReplicaId, MaxWaitTime, MinBytes,
             [(TopicName, [(Partition, Offset, MaxBytes)])])
   deriving (Show, Eq, Deserializable, Serializable)
 
-newtype ReplicaId = ReplicaId Int32 deriving (Show, Eq, Num, Serializable, Deserializable)
-newtype MaxWaitTime = MaxWaitTime Int32 deriving (Show, Eq, Num, Serializable, Deserializable)
-newtype MinBytes = MinBytes Int32 deriving (Show, Eq, Num, Serializable, Deserializable)
-newtype MaxBytes = MaxBytes Int32 deriving (Show, Eq, Num, Serializable, Deserializable)
+newtype ReplicaId = ReplicaId Int32 deriving (Show, Eq, Num, Integral, Ord, Real, Enum, Serializable, Deserializable)
+newtype MaxWaitTime = MaxWaitTime Int32 deriving (Show, Eq, Num, Integral, Ord, Real, Enum, Serializable, Deserializable)
+newtype MinBytes = MinBytes Int32 deriving (Show, Eq, Num, Integral, Ord, Real, Enum, Serializable, Deserializable)
+newtype MaxBytes = MaxBytes Int32 deriving (Show, Eq, Num, Integral, Ord, Real, Enum, Serializable, Deserializable)
 
 newtype ProduceRequest =
   ProduceReq (RequiredAcks, Timeout,
@@ -173,26 +177,26 @@ newtype ProduceRequest =
   deriving (Show, Eq, Serializable)
 
 newtype RequiredAcks =
-  RequiredAcks Int16 deriving (Show, Eq, Serializable, Deserializable, Num)
+  RequiredAcks Int16 deriving (Show, Eq, Serializable, Deserializable, Num, Integral, Ord, Real, Enum)
 newtype Timeout =
-  Timeout Int32 deriving (Show, Eq, Serializable, Deserializable, Num)
+  Timeout Int32 deriving (Show, Eq, Serializable, Deserializable, Num, Integral, Ord, Real, Enum)
 newtype Partition =
-  Partition Int32 deriving (Show, Ord, Eq, Serializable, Deserializable, Num)
+  Partition Int32 deriving (Show, Eq, Serializable, Deserializable, Num, Integral, Ord, Real, Enum)
 
 newtype MessageSet =
   MessageSet { _messageSetMembers :: [MessageSetMember] } deriving (Show, Eq)
 data MessageSetMember =
   MessageSetMember { _setOffset :: Offset, _setMessage :: Message } deriving (Show, Eq)
 
-newtype Offset = Offset Int64 deriving (Show, Eq, Serializable, Deserializable, Num)
+newtype Offset = Offset Int64 deriving (Show, Eq, Serializable, Deserializable, Num, Integral, Ord, Real, Enum)
 
 newtype Message =
   Message { _messageFields :: (Crc, MagicByte, Attributes, Key, Value) }
   deriving (Show, Eq, Deserializable)
 
-newtype Crc = Crc Int32 deriving (Show, Eq, Serializable, Deserializable, Num)
-newtype MagicByte = MagicByte Int8 deriving (Show, Eq, Serializable, Deserializable, Num)
-newtype Attributes = Attributes Int8 deriving (Show, Eq, Serializable, Deserializable, Num)
+newtype Crc = Crc Int32 deriving (Show, Eq, Serializable, Deserializable, Num, Integral, Ord, Real, Enum)
+newtype MagicByte = MagicByte Int8 deriving (Show, Eq, Serializable, Deserializable, Num, Integral, Ord, Real, Enum)
+newtype Attributes = Attributes Int8 deriving (Show, Eq, Serializable, Deserializable, Num, Integral, Ord, Real, Enum)
 
 newtype Key = Key { _keyBytes :: Maybe KafkaBytes } deriving (Show, Eq)
 newtype Value = Value { _valueBytes :: Maybe KafkaBytes } deriving (Show, Eq)
@@ -499,8 +503,6 @@ instance Deserializable Int16 where deserialize = liftM fromIntegral getWord16be
 instance Deserializable Int8  where deserialize = liftM fromIntegral getWord8
 
 -- * Generated lenses
-
-makeLenses ''Response
 
 makeLenses ''TopicName
 
