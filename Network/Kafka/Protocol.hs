@@ -5,6 +5,7 @@
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE TupleSections #-}
 {-# LANGUAGE Rank2Types #-}
 
 module Network.Kafka.Protocol
@@ -14,7 +15,7 @@ module Network.Kafka.Protocol
 import Control.Applicative
 import Control.Category (Category(..))
 import Control.Lens
-import Control.Monad (replicateM, liftM, liftM2, liftM3, liftM4, liftM5, unless)
+import Control.Monad (forM, liftM, liftM2, liftM3, liftM4, liftM5, replicateM, unless)
 import Control.Monad.IO.Class (MonadIO, liftIO)
 import Data.ByteString.Char8 (ByteString)
 import Data.ByteString.Lens (unpackedChars)
@@ -30,10 +31,21 @@ import qualified Data.ByteString.Char8 as B
 import qualified Network
 
 data ReqResp a where
-  MetadataRR :: MonadIO m => MetadataRequest -> ReqResp (m MetadataResponse)
-  ProduceRR  :: MonadIO m => ProduceRequest  -> ReqResp (m ProduceResponse)
-  FetchRR    :: MonadIO m => FetchRequest    -> ReqResp (m FetchResponse)
-  OffsetRR   :: MonadIO m => OffsetRequest   -> ReqResp (m OffsetResponse)
+  MetadataRR         :: MonadIO m => MetadataRequest         -> ReqResp (m MetadataResponse)
+  ProduceRR          :: MonadIO m => ProduceRequest          -> ReqResp (m ProduceResponse)
+  FetchRR            :: MonadIO m => FetchRequest            -> ReqResp (m FetchResponse)
+  OffsetRR           :: MonadIO m => OffsetRequest           -> ReqResp (m OffsetResponse)
+  OffsetCommitRR     :: MonadIO m => OffsetCommitRequest     -> ReqResp (m OffsetCommitResponse)
+  OffsetCommitV2RR   :: MonadIO m => OffsetCommitRequestV2   -> ReqResp (m OffsetCommitResponse)
+  OffsetFetchRR      :: MonadIO m => OffsetFetchRequest      -> ReqResp (m OffsetFetchResponse)
+  GroupCoordinatorRR :: MonadIO m => GroupCoordinatorRequest -> ReqResp (m GroupCoordinatorResponse)
+  HeartbeatRR        :: MonadIO m => HeartbeatRequest        -> ReqResp (m HeartbeatResponse)
+  LeaveGroupRR       :: MonadIO m => LeaveGroupRequest       -> ReqResp (m LeaveGroupResponse)
+
+  JoinGroupRR        :: (MonadIO m, Deserializable a, Serializable a, Eq a, Show a) =>
+    JoinGroupRequest a -> ReqResp (m (JoinGroupResponse a))
+  SyncGroupRR        :: (MonadIO m, Deserializable a, Serializable a, Eq a, Show a) =>
+    SyncGroupRequest a -> ReqResp (m (SyncGroupResponse a))
 
 doRequest' :: (Deserializable a, MonadIO m) => CorrelationId -> Handle -> Request -> m (Either String a)
 doRequest' correlationId h r = do
@@ -51,10 +63,18 @@ doRequest' correlationId h r = do
         isolate (dataLength - 4) deserialize
 
 doRequest :: MonadIO m => ClientId -> CorrelationId -> Handle -> ReqResp (m a) -> m (Either String a)
-doRequest clientId correlationId h (MetadataRR req) = doRequest' correlationId h $ Request (correlationId, clientId, MetadataRequest req)
-doRequest clientId correlationId h (ProduceRR req)  = doRequest' correlationId h $ Request (correlationId, clientId, ProduceRequest req)
-doRequest clientId correlationId h (FetchRR req)    = doRequest' correlationId h $ Request (correlationId, clientId, FetchRequest req)
-doRequest clientId correlationId h (OffsetRR req)   = doRequest' correlationId h $ Request (correlationId, clientId, OffsetRequest req)
+doRequest clientId correlationId h (MetadataRR req)         = doRequest' correlationId h $ Request (correlationId, clientId, MetadataRequest req)
+doRequest clientId correlationId h (ProduceRR req)          = doRequest' correlationId h $ Request (correlationId, clientId, ProduceRequest req)
+doRequest clientId correlationId h (FetchRR req)            = doRequest' correlationId h $ Request (correlationId, clientId, FetchRequest req)
+doRequest clientId correlationId h (OffsetRR req)           = doRequest' correlationId h $ Request (correlationId, clientId, OffsetRequest req)
+doRequest clientId correlationId h (OffsetCommitRR req)     = doRequest' correlationId h $ Request (correlationId, clientId, OffsetCommitRequest req)
+doRequest clientId correlationId h (OffsetCommitV2RR req)   = doRequest' correlationId h $ Request (correlationId, clientId, OffsetCommitRequestV2 req)
+doRequest clientId correlationId h (OffsetFetchRR req)      = doRequest' correlationId h $ Request (correlationId, clientId, OffsetFetchRequest req)
+doRequest clientId correlationId h (GroupCoordinatorRR req) = doRequest' correlationId h $ Request (correlationId, clientId, GroupCoordinatorRequest req)
+doRequest clientId correlationId h (JoinGroupRR req)        = doRequest' correlationId h $ Request (correlationId, clientId, JoinGroupRequest req)
+doRequest clientId correlationId h (HeartbeatRR req)        = doRequest' correlationId h $ Request (correlationId, clientId, HeartbeatRequest req)
+doRequest clientId correlationId h (LeaveGroupRR req)       = doRequest' correlationId h $ Request (correlationId, clientId, LeaveGroupRequest req)
+doRequest clientId correlationId h (SyncGroupRR req)        = doRequest' correlationId h $ Request (correlationId, clientId, SyncGroupRequest req)
 
 class Serializable a where
   serialize :: a -> Put
@@ -62,31 +82,37 @@ class Serializable a where
 class Deserializable a where
   deserialize :: Get a
 
-newtype JoinGroupRequest a = JoinGroupReq (ConsumerGroupId, Timeout, GroupMemberId, ProtocolType, GroupProtocols a) deriving (Show, Eq, Serializable)
+newtype JoinGroupRequest a = JoinGroupReq (GroupId, Timeout, GroupMemberId, ProtocolType, [GroupProtocol a]) deriving (Show, Eq, Serializable)
 newtype GroupMemberId = GroupMemberId KafkaString deriving (Show, Eq, Serializable, Deserializable, IsString)
 newtype ProtocolType = ProtocolType KafkaString deriving (Show, Eq, Serializable, Deserializable, IsString)
-type GroupProtocols a = [(ProtocolName, a)]
+newtype GroupProtocol a = GroupProtocol (ProtocolName, a) deriving (Show, Eq)
+
+instance Serializable a => Serializable (GroupProtocol a) where
+  serialize (GroupProtocol (name, x)) = do
+    let bytes = runPut $ serialize x
+    serialize (name, KBytes bytes)
+
 newtype ProtocolName = ProtocolName KafkaString deriving (Show, Eq, Serializable, Deserializable, IsString)
-newtype ProtocolMetadata = ProtocolMetadata KafkaBytes deriving (Show, Eq, Serializable, Deserializable, IsString)
-data JoinGroupResponse = LeaderJoinGroupResp GenerationId ProtocolName GroupMemberId Members
-                       | FollowerJoinGroupResp GenerationId ProtocolName LeaderId GroupMemberId
-                       | JoinGroupRespFailure KafkaError
-                       deriving (Show, Eq)
+
+data JoinGroupResponse a = LeaderJoinGroupResp GenerationId ProtocolName GroupMemberId (Members a)
+                         | FollowerJoinGroupResp GenerationId ProtocolName LeaderId GroupMemberId
+                         | JoinGroupRespFailure KafkaError
+                         deriving (Show, Eq)
 newtype GenerationId = GenerationId Int32 deriving (Show, Eq, Num, Serializable, Deserializable)
 type LeaderId = GroupMemberId
-type Members = [(GroupMemberId, MemberMetadata)]
-type MemberMetadata = ProtocolMetadata
+type Members a = [(GroupMemberId, a)]
 
-instance Deserializable JoinGroupResponse where
+instance Deserializable a => Deserializable (JoinGroupResponse a) where
   deserialize = do
-    (e, genId, protoName, leaderId, myId, members) <- deserialize :: Get (KafkaError, GenerationId, ProtocolName, LeaderId, GroupMemberId, Members)
+    (e, genId, protoName, leaderId, myId, members') <- deserialize :: Get (KafkaError, GenerationId, ProtocolName, LeaderId, GroupMemberId, Members KafkaBytes)
+    members <- forM members' $ \(memberId, KBytes bytes) -> unwrap bytes (memberId,)
     case e of
       NoError -> case members of
         [] -> return $ FollowerJoinGroupResp genId protoName leaderId myId
         _ -> return $ LeaderJoinGroupResp genId protoName myId members
       _ -> return $ JoinGroupRespFailure e
 
-newtype SyncGroupRequest a = SyncGroupReq (ConsumerGroupId, GenerationId, GroupMemberId, [GroupAssignment a]) deriving (Show, Eq, Serializable)
+newtype SyncGroupRequest a = SyncGroupReq (GroupId, GenerationId, GroupMemberId, [GroupAssignment a]) deriving (Show, Eq, Serializable)
 newtype GroupAssignment a = GroupAssignment (GroupMemberId, a) deriving (Show, Eq, Deserializable, Serializable)
 
 data SyncGroupResponse a = SyncGroupResp a
@@ -95,10 +121,40 @@ data SyncGroupResponse a = SyncGroupResp a
 
 instance Deserializable a => Deserializable (SyncGroupResponse a) where
   deserialize = do
-    (e, x) <- deserialize
+    (e, KBytes bytes) <- deserialize
     case e of
-      NoError -> return $ SyncGroupResp x
+      NoError -> unwrap bytes SyncGroupResp
       _       -> return $ SyncGroupRespFailure e
+
+unwrap :: (Monad m, Deserializable a) => ByteString -> (a -> b) -> m b
+unwrap bytes f =
+  case runGet (deserialize :: Deserializable a => Get a) bytes of
+    Right x -> return (f x)
+    Left s  -> fail s
+
+newtype HeartbeatRequest = HeartbeatReq (GroupId, GenerationId, GroupMemberId) deriving (Show, Eq, Serializable)
+data HeartbeatResponse = HeartbeatResp
+                       | HeartbeatFailure KafkaError
+                       deriving (Show, Eq)
+
+instance Deserializable HeartbeatResponse where
+  deserialize = do
+    e <- deserialize
+    case e of
+      NoError -> return HeartbeatResp
+      _       -> return $ HeartbeatFailure e
+
+newtype LeaveGroupRequest = LeaveGroupReq (GroupId, GroupMemberId) deriving (Show, Eq, Serializable)
+data LeaveGroupResponse = LeaveGroupResp
+                       | LeaveGroupFailure KafkaError
+                       deriving (Show, Eq)
+
+instance Deserializable LeaveGroupResponse where
+  deserialize = do
+    e <- deserialize
+    case e of
+      NoError -> return LeaveGroupResp
+      _       -> return $ LeaveGroupFailure e
 
 newtype GroupCoordinatorResponse = GroupCoordinatorResp (KafkaError, Broker) deriving (Show, Eq, Deserializable)
 
@@ -113,9 +169,13 @@ data RequestMessage where
   FetchRequest :: FetchRequest -> RequestMessage
   OffsetRequest :: OffsetRequest -> RequestMessage
   OffsetCommitRequest :: OffsetCommitRequest -> RequestMessage
+  OffsetCommitRequestV2 :: OffsetCommitRequestV2 -> RequestMessage
   OffsetFetchRequest :: OffsetFetchRequest -> RequestMessage
   GroupCoordinatorRequest :: GroupCoordinatorRequest -> RequestMessage
   JoinGroupRequest :: (Serializable a, Eq a, Show a) => JoinGroupRequest a -> RequestMessage
+  SyncGroupRequest :: (Serializable a, Eq a, Show a) => SyncGroupRequest a -> RequestMessage
+  HeartbeatRequest :: HeartbeatRequest -> RequestMessage
+  LeaveGroupRequest :: LeaveGroupRequest -> RequestMessage
 deriving instance Show RequestMessage
 instance Eq RequestMessage where
   x == y = x == y
@@ -201,22 +261,15 @@ newtype Attributes = Attributes Int8 deriving (Show, Eq, Serializable, Deseriali
 newtype Key = Key { _keyBytes :: Maybe KafkaBytes } deriving (Show, Eq)
 newtype Value = Value { _valueBytes :: Maybe KafkaBytes } deriving (Show, Eq)
 
-data ResponseMessage = MetadataResponse MetadataResponse
-                     | ProduceResponse ProduceResponse
-                     | FetchResponse FetchResponse
-                     | OffsetResponse OffsetResponse
-                     | OffsetCommitResponse OffsetCommitResponse
-                     | OffsetFetchResponse OffsetFetchResponse
-                     | GroupCoordinatorResponse GroupCoordinatorResponse
-                     | JoinGroupResponse JoinGroupResponse
-                     deriving (Show, Eq)
+newtype GroupCoordinatorRequest = GroupCoordinatorReq GroupId deriving (Show, Eq, Serializable)
 
-newtype GroupCoordinatorRequest = GroupCoordinatorReq ConsumerGroupId deriving (Show, Eq, Serializable)
-
-newtype OffsetCommitRequest = OffsetCommitReq (ConsumerGroupId, [(TopicName, [(Partition, Offset, Time, Metadata)])]) deriving (Show, Eq, Serializable)
-newtype OffsetFetchRequest = OffsetFetchReq (ConsumerGroupId, [(TopicName, [Partition])]) deriving (Show, Eq, Serializable)
-newtype ConsumerGroupId = ConsumerGroupId KafkaString deriving (Show, Eq, Serializable, Deserializable, IsString)
+newtype OffsetCommitRequest = OffsetCommitReq (GroupId, [(TopicName, [(Partition, Offset, Time, Metadata)])]) deriving (Show, Eq, Serializable)
+newtype OffsetFetchRequest = OffsetFetchReq (GroupId, [(TopicName, [Partition])]) deriving (Show, Eq, Serializable)
+newtype GroupId = GroupId KafkaString deriving (Show, Eq, Serializable, Deserializable, IsString)
 newtype Metadata = Metadata KafkaString deriving (Show, Eq, Serializable, Deserializable, IsString)
+
+newtype OffsetCommitRequestV2 = OffsetCommitReqV2 (GroupId, GenerationId, GroupMemberId, RetentionTime, [(TopicName, [(Partition, Offset, Metadata)])]) deriving (Show, Eq, Serializable)
+type RetentionTime = Time
 
 errorKafka :: KafkaError -> Int16
 errorKafka NoError                             = 0
@@ -235,7 +288,7 @@ errorKafka StaleControllerEpochCode            = 11
 errorKafka OffsetMetadataTooLargeCode          = 12
 errorKafka OffsetsLoadInProgressCode           = 14
 errorKafka GroupCoordinatorNotAvailableCode    = 15
-errorKafka NotCoordinatorForConsumerCode       = 16
+errorKafka NotCoordinatorForGroupCode          = 16
 errorKafka InvalidTopicCode                    = 17
 errorKafka RecordListTooLargeCode              = 18
 errorKafka NotEnoughReplicasCode               = 19
@@ -268,7 +321,7 @@ data KafkaError = NoError -- ^ @0@ No error--it worked!
                 | OffsetMetadataTooLargeCode -- ^ @12@ If you specify a string larger than configured maximum for offset metadata
                 | OffsetsLoadInProgressCode -- ^ @14@ The broker returns this error code for an offset fetch request if it is still loading offsets (after a leader change for that offsets topic partition).
                 | GroupCoordinatorNotAvailableCode -- ^ @15@ The broker returns this error code for group coordinator requests, offset commits, and most group management requests if the offsets topic has not yet been created, or if the group coordinator is not active.
-                | NotCoordinatorForConsumerCode -- ^ @16@ The broker returns this error code if it receives an offset fetch or commit request for a consumer group that it is not a coordinator for.
+                | NotCoordinatorForGroupCode -- ^ @16@ The broker returns this error code if it receives an offset fetch or commit request for a consumer group that it is not a coordinator for.
                 | InvalidTopicCode -- ^ @17@ For a request which attempts to access an invalid topic (e.g. one which has an illegal name), or if an attempt is made to write to an internal topic (such as the consumer offsets topic).
                 | RecordListTooLargeCode -- ^ @18@ If a message batch in a produce request exceeds the maximum configured segment size.
                 | NotEnoughReplicasCode -- ^ @19@ Returned from a produce request when the number of in-sync replicas is lower than the configured minimum and requiredAcks is -1.
@@ -309,7 +362,7 @@ instance Deserializable KafkaError where
       12   -> return OffsetMetadataTooLargeCode
       14   -> return OffsetsLoadInProgressCode
       15   -> return GroupCoordinatorNotAvailableCode
-      16   -> return NotCoordinatorForConsumerCode
+      16   -> return NotCoordinatorForGroupCode
       17   -> return InvalidTopicCode
       18   -> return RecordListTooLargeCode
       19   -> return NotEnoughReplicasCode
@@ -344,7 +397,11 @@ requestBytes x = runPut $ do
     where mr = runPut $ serialize x
 
 apiVersion :: RequestMessage -> ApiVersion
-apiVersion _ = ApiVersion 0 -- everything is at version 0 right now
+apiVersion (OffsetCommitRequestV2{}) = ApiVersion 2
+-- v0 and v1 are identical on the wire, but v0 (0.8.1) reads offsets from
+-- zookeeper, while v1 (0.8.2) reads offsets from kafka.
+apiVersion (OffsetFetchRequest{}) = ApiVersion 1
+apiVersion _ = ApiVersion 0 -- everything else is at version 0 right now
 
 apiKey :: RequestMessage -> ApiKey
 apiKey (ProduceRequest{}) = ApiKey 0
@@ -352,9 +409,13 @@ apiKey (FetchRequest{}) = ApiKey 1
 apiKey (OffsetRequest{}) = ApiKey 2
 apiKey (MetadataRequest{}) = ApiKey 3
 apiKey (OffsetCommitRequest{}) = ApiKey 8
+apiKey (OffsetCommitRequestV2{}) = ApiKey 8
 apiKey (OffsetFetchRequest{}) = ApiKey 9
 apiKey (GroupCoordinatorRequest{}) = ApiKey 10
 apiKey (JoinGroupRequest{}) = ApiKey 11
+apiKey (HeartbeatRequest{}) = ApiKey 12
+apiKey (LeaveGroupRequest{}) = ApiKey 13
+apiKey (SyncGroupRequest{}) = ApiKey 14
 
 instance Serializable RequestMessage where
   serialize (ProduceRequest r) = serialize r
@@ -362,9 +423,13 @@ instance Serializable RequestMessage where
   serialize (OffsetRequest r) = serialize r
   serialize (MetadataRequest r) = serialize r
   serialize (OffsetCommitRequest r) = serialize r
+  serialize (OffsetCommitRequestV2 r) = serialize r
   serialize (OffsetFetchRequest r) = serialize r
   serialize (GroupCoordinatorRequest r) = serialize r
   serialize (JoinGroupRequest r) = serialize r
+  serialize (HeartbeatRequest r) = serialize r
+  serialize (LeaveGroupRequest r) = serialize r
+  serialize (SyncGroupRequest r) = serialize r
 
 instance Serializable Int64 where serialize = putWord64be . fromIntegral
 instance Serializable Int32 where serialize = putWord32be . fromIntegral
@@ -537,8 +602,6 @@ makeLenses ''Message
 
 makeLenses ''Key
 makeLenses ''Value
-
-makePrisms ''ResponseMessage
 
 -- * Composed lenses
 

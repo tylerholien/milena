@@ -1,7 +1,11 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE FlexibleContexts #-}
 
-module Network.Kafka.Group where
+module Network.Kafka.Group
+  ( groupCoordinator'
+  , joinGroup'
+  , syncGroup'
+  ) where
 
 import System.IO
 import Prelude
@@ -11,16 +15,13 @@ import Network.Kafka.Protocol
 
 -- * Groups
 groupCoordinator' :: Handle -> GroupCoordinatorRequest -> Kafka GroupCoordinatorResponse
-groupCoordinator' h request =
-    makeRequest (GroupCoordinatorRequest request) >>= doRequest h >>= expectResponse ExpectedGroupCoordinator _GroupCoordinatorResponse
+groupCoordinator' h request = makeRequest h $ GroupCoordinatorRR request
 
-joinGroup' :: (Show a, Eq a, Serializable a) => Handle -> JoinGroupRequest a -> Kafka JoinGroupResponse
-joinGroup' h request =
-  makeRequest (JoinGroupRequest request) >>= doRequest h >>= expectResponse ExpectedJoinGroup _JoinGroupResponse
+joinGroup' :: (Show a, Eq a, Deserializable a, Serializable a) => Handle -> JoinGroupRequest a -> Kafka (JoinGroupResponse a)
+joinGroup' h request = makeRequest h $ JoinGroupRR request
 
--- syncGroup' :: (Show a, Eq a, Serializable a) => Handle -> SyncGroupRequest a -> Kafka (SyncGroupResponse a)
--- syncGroup' h request =
---   makeRequest (SyncGroupRequest request) >>= doRequest h >>= expectResponse ExpectedSyncGroup _SyncGroupResponse
+syncGroup' :: (Show a, Eq a, Deserializable a, Serializable a) => Handle -> SyncGroupRequest a -> Kafka (SyncGroupResponse a)
+syncGroup' h request = makeRequest h $ SyncGroupRR request
 
 -- let rangeAssignmentProtocol = (0 :: Int16, ["milena-test" :: TopicName], "" :: KafkaBytes)
 --     theBytes = runPut $ serialize rangeAssignmentProtocol

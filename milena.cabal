@@ -35,8 +35,10 @@ library
   exposed-modules:     Network.Kafka,
                        Network.Kafka.Consumer,
                        Network.Kafka.Group,
+                       Network.Kafka.Group.Consumer,
                        Network.Kafka.Protocol,
-                       Network.Kafka.Producer
+                       Network.Kafka.Producer,
+                       Network.Kafka.Group.Consumer.Protocol
   build-depends:       base          >=4.7      && <5,
                        mtl           >=2.1      && <2.3,
                        cereal        >=0.4      && <0.5,

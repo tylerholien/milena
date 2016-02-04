@@ -7,11 +7,13 @@ import Data.Either (isRight, isLeft)
 import qualified Data.List.NonEmpty as NE
 import Control.Concurrent (threadDelay)
 import Control.Lens
+import Control.Monad (unless)
 import Control.Monad.Except (catchError, throwError)
 import Control.Monad.Trans (liftIO)
 import Network.Kafka
 import Network.Kafka.Consumer
 import Network.Kafka.Group
+import Network.Kafka.Group.Consumer.Protocol
 import Network.Kafka.Producer
 -- import Network.Kafka.Protocol (JoinGroupRequest(..), GroupCoordinatorResponse(..), GroupCoordinatorRequest(..), ProduceResponse(..), KafkaError(..))
 import Test.Tasty
@@ -106,55 +108,53 @@ specs = do
         use stateAddresses
       result `shouldBe` fmap NE.nub result
 
-{-
-
-ProtocolType => "consumer"
- 
-GroupProtocol  => AssignmentStrategy
-  AssignmentStrategy => String
- 
-MemberMetadata => Version Subscription AssignmentStrategies
-  Version      => int16
-  Subscription => Topics UserData
-    Topics     => [String]
-    UserData     => Bytes
-     
-MemberState => Version Assignment
-  Version           => int16
-  Assignment        => TopicPartitions UserData
-    TopicPartitions => [Topic Partitions]
-      Topic      => String
-      Partitions => [int32]
-    UserData     => Bytes
-
- * Subscription => Version Topics
- *   Version    => Int16
- *   Topics     => [String]
- *   UserData   => Bytes
- *
- * Assignment => Version TopicPartitions
- *   Version         => int16
- *   TopicPartitions => [Topic Partitions]
- *     Topic         => String
- *     Partitions    => [int32]
-
--}
-
-
   describe "JoinGroupRequest" $
-    it "wow" $ do
+    it "makes join requests" $ do
       result <- run $ do
-        resp <- withAddressHandle ("localhost", 9092) (flip groupCoordinator' $ GroupCoordinatorReq "milena-test-client")
-        -- GroupCoordinatorResp (NoError,Broker {_brokerFields = (NodeId {_nodeId = 2},Host {_hostKString = KString {_kString = "tylers-macbook"}},Port {_portInt = 9094})})
+        let groupId = "milena-test-client"
+        resp <- withAddressHandle ("localhost", 9092) (flip groupCoordinator' $ GroupCoordinatorReq groupId)
         case resp of
           (GroupCoordinatorResp (NoError, broker)) -> do
-            let rangeAssignmentProtocol = (0 :: Int16, ["milena-test" :: TopicName], "" :: KafkaBytes)
-                theBytes = runPut $ serialize rangeAssignmentProtocol
-                protocolMetadata = ProtocolMetadata (KBytes theBytes)
-            r <- withBrokerHandle broker (\h -> joinGroup' h (JoinGroupReq ("milena-test-client", 30000, "", "consumer", [("range", protocolMetadata)])))
+            let rangeAssignmentProtocol = Subscription (0, [topic], UserData $ KBytes "")
+                joinRequest = JoinGroupReq (groupId, 30000, "", "consumer", [GroupProtocol ("range", rangeAssignmentProtocol)])
+            r <- withBrokerHandle broker (\h -> joinGroup' h joinRequest)
             liftIO $ putStrLn "\n=======" >> print r
+            case r of
+              LeaderJoinGroupResp genId protoName memberId members -> do
+                liftIO $ print members
+                -- require protocol version 0
+                unless (all (\ (_, Subscription (ProtocolVersion v, ts, _)) -> v == 0 && ts == [topic]) members) $
+                  throwError KafkaFailedToFetchMetadata
+                -- [(memberId, Subscription (ProtocolVersion 0, [topic], UserData $ KBytes ""))]
+                let syncRequest = SyncGroupReq (groupId, genId, memberId, []) :: SyncGroupRequest (Assignment KafkaBytes)
+                return (1 :: Int)
+              FollowerJoinGroupResp genId protoName leaderId memberId -> do
+                liftIO $ print "hi!!!"
+                let syncRequest = SyncGroupReq (groupId, genId, memberId, []) :: SyncGroupRequest (Assignment KafkaBytes)
+                r' <- withBrokerHandle broker (\h -> syncGroup' h syncRequest)
+                liftIO $ print r'
+                case r' of
+                  SyncGroupResp (Assignment (_, topicPartitions, _)) -> do
+                    let offsetFetch = OffsetFetchReq (groupId, topicPartitions)
+                    OffsetFetchResp tpOffsets <- withBrokerHandle broker (\h -> makeRequest h $ OffsetFetchRR offsetFetch)
+                    liftIO $ print tpOffsets
+                    let offsetCommit = OffsetCommitReqV2 (groupId, genId, memberId, -1, map (\ (t, ps) -> (t, map (\ (p, o, m, err) -> (p, o, m)) ps)) tpOffsets)
+                    offsetCommitResponse <- withBrokerHandle broker (\h -> makeRequest h $ OffsetCommitV2RR offsetCommit)
+                    liftIO $ print offsetCommitResponse
+                    let heartbeat = HeartbeatReq (groupId, genId, memberId)
+                    heartbeatResponse <- withBrokerHandle broker (\h -> makeRequest h $ HeartbeatRR heartbeat)
+                    liftIO $ print heartbeatResponse
+                    leaveGroupResponse <- withBrokerHandle broker (\h -> makeRequest h $ LeaveGroupRR $ LeaveGroupReq (groupId, memberId))
+                    liftIO $ print leaveGroupResponse
+                    return "oh wow..."
+                  SyncGroupRespFailure e -> do
+                    liftIO $ print e
+                    return "holy shit!"
+                return 2
+              JoinGroupRespFailure err -> do
+                liftIO $ print "SAD!!! :-("
+                return 3
           _ -> throwError KafkaFailedToFetchMetadata
-        -- JoinGroupRequest = JoinGroupReq (ConsumerGroupId, Timeout, GroupMemberId, ProtocolType, GroupProtocols) deriving (Show, Eq, Serializable)
       result `shouldSatisfy` isRight
 
 prop :: Testable prop => String -> prop -> SpecWith ()
