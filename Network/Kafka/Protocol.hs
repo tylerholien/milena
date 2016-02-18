@@ -10,6 +10,7 @@ module Network.Kafka.Protocol
 
 import Control.Applicative
 import Control.Category (Category(..))
+import Control.Exception (Exception)
 import Control.Lens
 import Control.Monad (replicateM, liftM, liftM2, liftM3, liftM4, liftM5, unless)
 import Control.Monad.IO.Class (MonadIO, liftIO)
@@ -235,6 +236,8 @@ instance Deserializable KafkaError where
       15   -> return ConsumerCoordinatorNotAvailableCode
       16   -> return NotCoordinatorForConsumerCode
       _    -> fail $ "invalid error code: " ++ show x
+
+instance Exception KafkaError
 
 newtype Request = Request (CorrelationId, ClientId, RequestMessage) deriving (Show, Eq)
 

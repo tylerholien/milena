@@ -6,7 +6,7 @@
 module Network.Kafka where
 
 import Control.Applicative
-import Control.Exception (IOException)
+import Control.Exception (Exception, IOException)
 import Control.Exception.Lifted (catch)
 import Control.Lens
 import Control.Monad.Trans.Control (MonadBaseControl)
@@ -71,6 +71,8 @@ data KafkaClientError = -- | A response did not contain an offset.
                       | KafkaFailedToFetchMetadata
                       | KafkaIOException IOException
                         deriving (Eq, Show)
+
+instance Exception KafkaClientError
 
 -- | An abstract form of Kafka's time. Used for querying offsets.
 data KafkaTime = -- | The latest time on the broker.
