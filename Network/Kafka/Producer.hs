@@ -1,3 +1,4 @@
+{-# LANGUAGE FlexibleContexts #-}
 module Network.Kafka.Producer where
 
 import Data.Bits ((.&.))
@@ -21,7 +22,7 @@ import Network.Kafka.Protocol
 -- * Producing
 
 -- | Execute a produce request and get the raw preduce response.
-produce :: Handle -> ProduceRequest -> Kafka ProduceResponse
+produce :: Kafka m => Handle -> ProduceRequest -> m ProduceResponse
 produce handle request = makeRequest handle $ ProduceRR request
 
 -- | Construct a produce request with explicit arguments.
@@ -31,7 +32,7 @@ produceRequest ra ti ts =
         where f (TopicAndPartition t p, i) = M.singleton t [(p, i)]
 
 -- | Send messages to partition calculated by 'partitionAndCollate'.
-produceMessages :: [TopicAndMessage] -> Kafka [ProduceResponse]
+produceMessages :: Kafka m => [TopicAndMessage] -> m [ProduceResponse]
 produceMessages tams = do
   m <- fmap (fmap groupMessagesToSet) <$> partitionAndCollate tams
   mapM (uncurry send) $ fmap M.toList <$> M.toList m
@@ -42,7 +43,7 @@ groupMessagesToSet xs = MessageSet $ msm <$> xs
     where msm = MessageSetMember (Offset (-1)) . _tamMessage
 
 -- | Group messages together with the leader they should be sent to.
-partitionAndCollate :: [TopicAndMessage] -> Kafka (M.Map Leader (M.Map TopicAndPartition [TopicAndMessage]))
+partitionAndCollate :: Kafka m => [TopicAndMessage] -> m (M.Map Leader (M.Map TopicAndPartition [TopicAndMessage]))
 partitionAndCollate ks = recurse ks M.empty
       where recurse [] accum = return accum
             recurse (x:xs) accum = do
@@ -68,7 +69,7 @@ getPartitionByKey key ps = Set.toAscList ps ^? ix i
         i = x `mod` numPartitions
 
 -- | Execute a produce request using the values in the state.
-send :: Leader -> [(TopicAndPartition, MessageSet)] -> Kafka ProduceResponse
+send :: Kafka m => Leader -> [(TopicAndPartition, MessageSet)] -> m ProduceResponse
 send l ts = do
   let s = stateBrokers . at l
       topicNames = map (_tapTopic . fst) ts
@@ -77,7 +78,7 @@ send l ts = do
   requestTimeout <- use stateRequestTimeout
   withBrokerHandle broker $ \handle -> produce handle $ produceRequest requiredAcks requestTimeout ts
 
-getRandPartition :: Set PartitionAndLeader -> Kafka (Maybe PartitionAndLeader)
+getRandPartition :: Kafka m => Set PartitionAndLeader -> m (Maybe PartitionAndLeader)
 getRandPartition ps =
     liftIO $ (ps' ^?) . element <$> getStdRandom (randomR (0, length ps' - 1))
         where ps' = ps ^.. folded . filtered (has $ palLeader . leaderId . _Just)
