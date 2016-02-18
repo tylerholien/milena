@@ -1,3 +1,4 @@
+{-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE FlexibleContexts #-}
@@ -8,8 +9,9 @@ import Control.Applicative
 import Control.Exception (IOException)
 import Control.Exception.Lifted (catch)
 import Control.Lens
+import Control.Monad.Trans.Control (MonadBaseControl)
+import Control.Monad.IO.Class (MonadIO, liftIO)
 import Control.Monad.Except (ExceptT(..), runExceptT, MonadError(..))
-import Control.Monad.Trans (liftIO, lift)
 import Control.Monad.Trans.State
 import Control.Monad.State.Class (MonadState)
 import Data.ByteString.Char8 (ByteString)
@@ -55,7 +57,7 @@ data KafkaState = KafkaState { -- | Name to use as a client ID.
 makeLenses ''KafkaState
 
 -- | The core Kafka monad.
-type Kafka = StateT KafkaState (ExceptT KafkaClientError IO)
+type Kafka m = (MonadState KafkaState m, MonadError KafkaClientError m, MonadIO m, MonadBaseControl IO m)
 
 type KafkaClientId = KafkaString
 
@@ -151,15 +153,15 @@ addKafkaAddress = over stateAddresses . NE.nub .: NE.cons
         (.:) = (.).(.)
 
 -- | Run the underlying Kafka monad.
-runKafka :: KafkaState -> Kafka a -> IO (Either KafkaClientError a)
+runKafka :: KafkaState -> StateT KafkaState (ExceptT KafkaClientError IO) a -> IO (Either KafkaClientError a)
 runKafka s k = runExceptT $ evalStateT k s
 
 -- | Catch 'IOException's and wrap them in 'KafkaIOException's.
-tryKafka :: Kafka a -> Kafka a
-tryKafka = (`catch` \e -> lift . throwError $ KafkaIOException (e :: IOException))
+tryKafka :: Kafka m => m a -> m a
+tryKafka = (`catch` \e -> throwError $ KafkaIOException (e :: IOException))
 
 -- | Make a request, incrementing the `_stateCorrelationId`.
-makeRequest :: Handle -> ReqResp (Kafka a) -> Kafka a
+makeRequest :: Kafka m => Handle -> ReqResp (m a) -> m a
 makeRequest h reqresp = do
   (clientId, correlationId) <- makeIds
   eitherResp <- tryKafka $ doRequest clientId correlationId h reqresp
@@ -175,32 +177,32 @@ makeRequest h reqresp = do
       return (ClientId conid, corid)
 
 -- | Send a metadata request to any broker.
-metadata :: MetadataRequest -> Kafka MetadataResponse
+metadata :: Kafka m => MetadataRequest -> m MetadataResponse
 metadata request = withAnyHandle $ flip metadata' request
 
 -- | Send a metadata request.
-metadata' :: Handle -> MetadataRequest -> Kafka MetadataResponse
+metadata' :: Kafka m => Handle -> MetadataRequest -> m MetadataResponse
 metadata' h request = makeRequest h $ MetadataRR request
 
-getTopicPartitionLeader :: TopicName -> Partition -> Kafka Broker
+getTopicPartitionLeader :: Kafka m => TopicName -> Partition -> m Broker
 getTopicPartitionLeader t p = do
   let s = stateTopicMetadata . at t
   tmd <- findMetadataOrElse [t] s KafkaFailedToFetchMetadata
   leader <- expect KafkaFailedToFetchMetadata (firstOf $ findPartitionMetadata t . (folded . findPartition p) . partitionMetadataLeader) tmd
   use stateBrokers >>= expect (KafkaInvalidBroker leader) (view $ at leader)
 
-expect :: KafkaClientError -> (a -> Maybe b) -> a -> Kafka b
-expect e f = lift . maybe (throwError e) return . f
+expect :: Kafka m => KafkaClientError -> (a -> Maybe b) -> a -> m b
+expect e f = maybe (throwError e) return . f
 
 -- | Find a leader and partition for the topic.
-brokerPartitionInfo :: TopicName -> Kafka (Set PartitionAndLeader)
+brokerPartitionInfo :: Kafka m => TopicName -> m (Set PartitionAndLeader)
 brokerPartitionInfo t = do
   let s = stateTopicMetadata . at t
   tmd <- findMetadataOrElse [t] s KafkaFailedToFetchMetadata
   return $ Set.fromList $ pal <$> tmd ^. partitionsMetadata
     where pal d = PartitionAndLeader t (d ^. partitionId) (d ^. partitionMetadataLeader)
 
-findMetadataOrElse :: [TopicName] -> Getting (Maybe a) KafkaState (Maybe a) -> KafkaClientError -> Kafka a
+findMetadataOrElse :: Kafka m => [TopicName] -> Getting (Maybe a) KafkaState (Maybe a) -> KafkaClientError -> m a
 findMetadataOrElse ts s err = do
   maybeFound <- use s
   case maybeFound of
@@ -210,7 +212,7 @@ findMetadataOrElse ts s err = do
       maybeFound' <- use s
       case maybeFound' of
         Just x -> return x
-        Nothing -> lift $ throwError err
+        Nothing -> throwError err
 
 -- | Convert an abstract time to a serializable protocol value.
 protocolTime :: KafkaTime -> Time
@@ -218,7 +220,7 @@ protocolTime LatestTime = Time (-1)
 protocolTime EarliestTime = Time (-2)
 protocolTime (OtherTime o) = o
 
-updateMetadatas :: [TopicName] -> Kafka ()
+updateMetadatas :: Kafka m => [TopicName] -> m ()
 updateMetadatas ts = do
   md <- metadata $ MetadataReq ts
   let (brokers, tmds) = (md ^.. metadataResponseBrokers . folded, md ^.. topicsMetadata . folded)
@@ -232,10 +234,10 @@ updateMetadatas ts = do
           addTopicMetadata :: TopicMetadata -> M.Map TopicName TopicMetadata -> M.Map TopicName TopicMetadata
           addTopicMetadata tm = M.insert (tm ^. topicMetadataName) tm
 
-updateMetadata :: TopicName -> Kafka ()
+updateMetadata :: Kafka m => TopicName -> m ()
 updateMetadata t = updateMetadatas [t]
 
-updateAllMetadata :: Kafka ()
+updateAllMetadata :: Kafka m => m ()
 updateAllMetadata = updateMetadatas []
 
 -- | Execute a Kafka action with a 'Handle' for the given 'Broker', updating
@@ -247,7 +249,7 @@ updateAllMetadata = updateMetadatas []
 -- Note that when the given action throws an exception, any state changes will
 -- be discarded. This includes both 'IOException's and exceptions thrown by
 -- 'throwError' from 'Control.Monad.Except'.
-withBrokerHandle :: Broker -> (Handle -> Kafka a) -> Kafka a
+withBrokerHandle :: Kafka m => Broker -> (Handle -> m a) -> m a
 withBrokerHandle broker = withAddressHandle (broker2address broker)
 
 -- | Execute a Kafka action with a 'Handle' for the given 'KafkaAddress',
@@ -259,7 +261,7 @@ withBrokerHandle broker = withAddressHandle (broker2address broker)
 -- Note that when the given action throws an exception, any state changes will
 -- be discarded. This includes both 'IOException's and exceptions thrown by
 -- 'throwError' from 'Control.Monad.Except'.
-withAddressHandle :: KafkaAddress -> (Handle -> Kafka a) -> Kafka a
+withAddressHandle :: Kafka m => KafkaAddress -> (Handle -> m a) -> m a
 withAddressHandle address kafkaAction = do
   conns <- use stateConnections
   let foundPool = conns ^. at address
@@ -286,7 +288,7 @@ broker2address broker = (,) (broker ^. brokerHost) (broker ^. brokerPort)
 -- Note that when the given action throws an exception, any state changes will
 -- be discarded. This includes both 'IOException's and exceptions thrown by
 -- 'throwError' from 'Control.Monad.Except'.
-withAnyHandle :: (Handle -> Kafka a) -> Kafka a
+withAnyHandle :: Kafka m => (Handle -> m a) -> m a
 withAnyHandle f = do
   (addy :| _) <- use stateAddresses
   x <- withAddressHandle addy f
@@ -307,13 +309,13 @@ data PartitionOffsetRequestInfo =
                                }
 
 -- | Get the first found offset.
-getLastOffset :: KafkaTime -> Partition -> TopicName -> Kafka Offset
+getLastOffset :: Kafka m => KafkaTime -> Partition -> TopicName -> m Offset
 getLastOffset m p t = do
   broker <- getTopicPartitionLeader t p
   withBrokerHandle broker (\h -> getLastOffset' h m p t)
 
 -- | Get the first found offset.
-getLastOffset' :: Handle -> KafkaTime -> Partition -> TopicName -> Kafka Offset
+getLastOffset' :: Kafka m => Handle -> KafkaTime -> Partition -> TopicName -> m Offset
 getLastOffset' h m p t = do
   let offsetRR = OffsetRR $ offsetRequest [(TopicAndPartition t p, PartitionOffsetRequestInfo m 1)]
   offsetResponse <- makeRequest h offsetRR
