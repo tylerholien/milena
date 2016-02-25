@@ -20,7 +20,7 @@ import Network.Kafka.Protocol
 
 -- * Producing
 
--- | Execute a produce request and get the raw preduce response.
+-- | Execute a produce request and get the raw produce response.
 produce :: Handle -> ProduceRequest -> Kafka ProduceResponse
 produce handle request = makeRequest handle $ ProduceRR request
 
