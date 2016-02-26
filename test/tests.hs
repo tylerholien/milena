@@ -4,10 +4,11 @@ module Main where
 
 import Data.Functor
 import Data.Either (isRight, isLeft)
+import Data.List (sort)
 import qualified Data.List.NonEmpty as NE
 import Control.Concurrent (threadDelay)
 import Control.Lens
-import Control.Monad (unless)
+import Control.Monad (forever, unless)
 import Control.Monad.Except (catchError, throwError)
 import Control.Monad.Trans (liftIO)
 import Network.Kafka
@@ -115,6 +116,9 @@ specs = do
         resp <- withAddressHandle ("localhost", 9092) (flip groupCoordinator' $ GroupCoordinatorReq groupId)
         case resp of
           (GroupCoordinatorResp (NoError, broker)) -> do
+            -- forever $ do
+            --   descResp <- withBrokerHandle broker (\h -> makeRequest h $ DescribeGroupRR $ DescribeGroupReq [groupId])
+            --   liftIO $ print descResp
             let rangeAssignmentProtocol = Subscription (0, [topic], UserData $ KBytes "")
                 joinRequest = JoinGroupReq (groupId, 30000, "", "consumer", [GroupProtocol ("range", rangeAssignmentProtocol)])
             r <- withBrokerHandle broker (\h -> joinGroup' h joinRequest)
@@ -123,10 +127,27 @@ specs = do
               LeaderJoinGroupResp genId protoName memberId members -> do
                 liftIO $ print members
                 -- require protocol version 0
+                -- TODO: verify protocol version when deserializing and don't put it in the Members?
+                tmd <- findMetadataOrElse [topic] (stateTopicMetadata . at topic) KafkaFailedToFetchMetadata
                 unless (all (\ (_, Subscription (ProtocolVersion v, ts, _)) -> v == 0 && ts == [topic]) members) $
                   throwError KafkaFailedToFetchMetadata
+                let partitions     = tmd ^.. partitionsMetadata . folded . partitionId
+                    memberCount    = length members
+                    partitionCount = length partitions
+                    assignments    = map (\ (memberId', Subscription (ProtocolVersion v, ts, userData)) -> GroupAssignment (memberId', Assignment (0, [(topic, sort partitions)], userData))) members
                 -- [(memberId, Subscription (ProtocolVersion 0, [topic], UserData $ KBytes ""))]
-                let syncRequest = SyncGroupReq (groupId, genId, memberId, []) :: SyncGroupRequest (Assignment KafkaBytes)
+                let syncRequest = SyncGroupReq (groupId, genId, memberId, assignments) :: SyncGroupRequest (Assignment KafkaBytes)
+                r' <- withBrokerHandle broker (\h -> syncGroup' h syncRequest)
+                forever $
+                  case r' of
+                    EmptySyncGroupResp -> do
+                      liftIO $ threadDelay 1000000
+                      descResp <- withBrokerHandle broker (\h -> makeRequest h $ DescribeGroupRR $ DescribeGroupReq [groupId])
+                      liftIO $ print descResp
+                      r'' <- withBrokerHandle broker (\h -> syncGroup' h syncRequest)
+                      liftIO $ print r''
+                    SyncGroupResp _ -> liftIO $ print r'
+                liftIO $ print r'
                 return (1 :: Int)
               FollowerJoinGroupResp genId protoName leaderId memberId -> do
                 liftIO $ print "hi!!!"

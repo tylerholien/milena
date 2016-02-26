@@ -41,22 +41,29 @@ data ReqResp a where
   GroupCoordinatorRR :: MonadIO m => GroupCoordinatorRequest -> ReqResp (m GroupCoordinatorResponse)
   HeartbeatRR        :: MonadIO m => HeartbeatRequest        -> ReqResp (m HeartbeatResponse)
   LeaveGroupRR       :: MonadIO m => LeaveGroupRequest       -> ReqResp (m LeaveGroupResponse)
+  DescribeGroupRR       :: MonadIO m => DescribeGroupRequest       -> ReqResp (m DescribeGroupResponse)
 
   JoinGroupRR        :: (MonadIO m, Deserializable a, Serializable a, Eq a, Show a) =>
     JoinGroupRequest a -> ReqResp (m (JoinGroupResponse a))
   SyncGroupRR        :: (MonadIO m, Deserializable a, Serializable a, Eq a, Show a) =>
     SyncGroupRequest a -> ReqResp (m (SyncGroupResponse a))
+  -- DescribeGroupRR    :: (MonadIO m, Deserializable a, Eq a, Show a) =>
+  --   DescribeGroupRequest -> ReqResp (m (DescribeGroupResponse a))
 
 doRequest' :: (Deserializable a, MonadIO m) => CorrelationId -> Handle -> Request -> m (Either String a)
 doRequest' correlationId h r = do
+  liftIO $ print r
   rawLength <- liftIO $ do
-    B.hPut h $ requestBytes r
+    let bs = requestBytes r
+    liftIO $ print bs
+    B.hPut h $ bs
     hFlush h
     B.hGet h 4
   case runGet (liftM fromIntegral getWord32be) rawLength of
     Left s -> return $ Left s
     Right dataLength -> do
       responseBytes <- liftIO $ B.hGet h dataLength
+      liftIO $ print responseBytes
       return $ flip runGet responseBytes $ do
         correlationId' <- deserialize
         unless (correlationId == correlationId') $ fail ("Expected " ++ show correlationId ++ " but got " ++ show correlationId')
@@ -75,6 +82,7 @@ doRequest clientId correlationId h (JoinGroupRR req)        = doRequest' correla
 doRequest clientId correlationId h (HeartbeatRR req)        = doRequest' correlationId h $ Request (correlationId, clientId, HeartbeatRequest req)
 doRequest clientId correlationId h (LeaveGroupRR req)       = doRequest' correlationId h $ Request (correlationId, clientId, LeaveGroupRequest req)
 doRequest clientId correlationId h (SyncGroupRR req)        = doRequest' correlationId h $ Request (correlationId, clientId, SyncGroupRequest req)
+doRequest clientId correlationId h (DescribeGroupRR req)    = doRequest' correlationId h $ Request (correlationId, clientId, DescribeGroupRequest req)
 
 class Serializable a where
   serialize :: a -> Put
@@ -112,19 +120,117 @@ instance Deserializable a => Deserializable (JoinGroupResponse a) where
         _ -> return $ LeaderJoinGroupResp genId protoName myId members
       _ -> return $ JoinGroupRespFailure e
 
+{-
+correlation id (1): \NUL\NUL\NUL\SOH
+list len (1): \NUL\NUL\NUL\SOH
+  error code (0): \NUL\NUL
+  str len (18): \NUL\DC2
+    milena-test-client
+  str len (6): \NUL\ACK
+    Stable
+  str len (8): \NUL\b
+    consumer
+  str len (5): \NUL\ENQ
+    range
+  list len (1): \NUL\NUL\NUL\SOH
+    str len (47): \NUL/
+      consumer-1-80b9c48a-b385-4298-a543-07215ec3e41b
+    str len (10): \NUL\n
+      consumer-1
+    str len (14): \NUL\SO
+      /192.168.1.134
+    bytes len (23): \NUL\NUL\NUL\ETB
+      \NUL\NUL\NUL\NUL\NUL\SOH\NUL\vmilena-test\NUL\NUL\NUL\NUL
+    bytes len (75): \NUL\NUL\NULK
+      ProtocolVersion int16 (0): \NUL\NUL
+      array len (1): \NUL\NUL\NUL\SOH
+        str len (11): \NUL\v
+          milena-test
+        array len (12): \NUL\NUL\NUL\f
+          PartitionId: \NUL\NUL\NUL\NUL
+          \NUL\NUL\NUL\SOH
+          \NUL\NUL\NUL\STX
+          \NUL\NUL\NUL\ETX
+          \NUL\NUL\NUL\EOT
+          \NUL\NUL\NUL\ENQ
+          \NUL\NUL\NUL\ACK
+          \NUL\NUL\NUL\a
+          \NUL\NUL\NUL\b
+          \NUL\NUL\NUL\t
+          \NUL\NUL\NUL\n
+          \NUL\NUL\NUL\v
+        bytes len (0): \NUL\NUL\NUL\NUL
+
+correlation id (1): \NUL\NUL\NUL\SOH
+array len (1): \NUL\NUL\NUL\SOH
+  error code: (0): \NUL\NUL
+  str len (18): \NUL\DC2
+    milena-test-client
+  str len (4): \NUL\EOT
+    Dead
+  str len (0): \NUL\NUL
+  str len (0): \NUL\NUL
+  array len (0): \NUL\NUL\NUL\NUL
+
+correlation id (10): \NUL\NUL\NUL\n
+array len (1): \NUL\NUL\NUL\SOH
+  error code (0): \NUL\NUL
+  str len (18): \NUL\DC2
+    milena-test-client
+  str len (6): \NUL\ACK
+    Stable
+  str len (8): \NUL\b
+    consumer
+  str len (5): \NUL\ENQ
+    range
+  array len (1): \NUL\NUL\NUL\SOH
+    str len (55): \NUL7
+      milena-test-client-33b73ee3-bf90-4299-b0b4-31c73f51b045
+    str len (18): \NUL\DC2
+      milena-test-client
+    str len (14): \NUL\SO
+      /192.168.1.134
+    bytes len (23): \NUL\NUL\NUL\ETB
+      \NUL\NUL\NUL\NUL\NUL\SOH\NUL\vmilena-test\NUL\NUL\NUL\NUL
+    bytes len (0): \NUL\NUL\NUL\NUL
+
+newtype Assignment a = Assignment (ProtocolVersion, [(TopicName, [Partition])], UserData a) deriving (Show, Eq, Deserializable, Serializable)
+DescribeGroupResponse => [ErrorCode GroupId State ProtocolType Protocol Members]
+  ErrorCode => int16
+  GroupId => string
+  State => string
+  ProtocolType => string
+  Protocol => string
+  Members => [MemberId ClientId ClientHost MemberMetadata MemberAssignment]
+    MemberId => string
+    ClientId => string
+    ClientHost => string
+    MemberMetadata => bytes
+    MemberAssignment => bytes
+-}
+
+newtype DescribeGroupRequest = DescribeGroupReq [GroupId] deriving (Show, Eq, Serializable)
+newtype DescribeGroupResponse = DescribeGroupResp [(KafkaError, GroupId, GroupState, ProtocolType, ProtocolName, [(GroupMemberId, ClientId, ClientHost, MemberMetadata, MemberAssignment)])] deriving (Show, Eq, Deserializable)
+type GroupState = KafkaString
+type ClientHost = KafkaString
+type MemberMetadata = KafkaBytes
+type MemberAssignment = KafkaBytes
+
 newtype SyncGroupRequest a = SyncGroupReq (GroupId, GenerationId, GroupMemberId, [GroupAssignment a]) deriving (Show, Eq, Serializable)
 newtype GroupAssignment a = GroupAssignment (GroupMemberId, a) deriving (Show, Eq, Deserializable, Serializable)
 
 data SyncGroupResponse a = SyncGroupResp a
+                         | EmptySyncGroupResp
                          | SyncGroupRespFailure KafkaError
                          deriving (Show, Eq)
 
 instance Deserializable a => Deserializable (SyncGroupResponse a) where
   deserialize = do
     (e, KBytes bytes) <- deserialize
-    case e of
-      NoError -> unwrap bytes SyncGroupResp
-      _       -> return $ SyncGroupRespFailure e
+    case (e, bytes) of
+      (NoError, "") -> return EmptySyncGroupResp
+      (NoError, _)  -> unwrap bytes SyncGroupResp
+      _             -> return $ SyncGroupRespFailure e
 
 unwrap :: (Monad m, Deserializable a) => ByteString -> (a -> b) -> m b
 unwrap bytes f =
@@ -175,6 +281,7 @@ data RequestMessage where
   JoinGroupRequest :: (Serializable a, Eq a, Show a) => JoinGroupRequest a -> RequestMessage
   SyncGroupRequest :: (Serializable a, Eq a, Show a) => SyncGroupRequest a -> RequestMessage
   HeartbeatRequest :: HeartbeatRequest -> RequestMessage
+  DescribeGroupRequest :: DescribeGroupRequest -> RequestMessage
   LeaveGroupRequest :: LeaveGroupRequest -> RequestMessage
 deriving instance Show RequestMessage
 instance Eq RequestMessage where
@@ -416,6 +523,7 @@ apiKey (JoinGroupRequest{}) = ApiKey 11
 apiKey (HeartbeatRequest{}) = ApiKey 12
 apiKey (LeaveGroupRequest{}) = ApiKey 13
 apiKey (SyncGroupRequest{}) = ApiKey 14
+apiKey (DescribeGroupRequest{}) = ApiKey 15
 
 instance Serializable RequestMessage where
   serialize (ProduceRequest r) = serialize r
@@ -430,6 +538,7 @@ instance Serializable RequestMessage where
   serialize (HeartbeatRequest r) = serialize r
   serialize (LeaveGroupRequest r) = serialize r
   serialize (SyncGroupRequest r) = serialize r
+  serialize (DescribeGroupRequest r) = serialize r
 
 instance Serializable Int64 where serialize = putWord64be . fromIntegral
 instance Serializable Int32 where serialize = putWord32be . fromIntegral
