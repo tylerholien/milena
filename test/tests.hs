@@ -16,7 +16,6 @@ import Network.Kafka.Consumer
 import Network.Kafka.Group
 import Network.Kafka.Group.Consumer.Protocol
 import Network.Kafka.Producer
--- import Network.Kafka.Protocol (JoinGroupRequest(..), GroupCoordinatorResponse(..), GroupCoordinatorRequest(..), ProduceResponse(..), KafkaError(..))
 import Test.Tasty
 import Test.Tasty.Hspec
 import Test.Tasty.QuickCheck
@@ -115,17 +114,12 @@ specs = do
         let groupId = "milena-test-client"
         resp <- withAddressHandle ("localhost", 9092) (flip groupCoordinator' $ GroupCoordinatorReq groupId)
         case resp of
-          (GroupCoordinatorResp (NoError, broker)) -> do
-            -- forever $ do
-            --   descResp <- withBrokerHandle broker (\h -> makeRequest h $ DescribeGroupRR $ DescribeGroupReq [groupId])
-            --   liftIO $ print descResp
+          GroupCoordinatorResp (NoError, broker) -> do
             let rangeAssignmentProtocol = Subscription (0, [topic], UserData $ KBytes "")
                 joinRequest = JoinGroupReq (groupId, 30000, "", "consumer", [GroupProtocol ("range", rangeAssignmentProtocol)])
             r <- withBrokerHandle broker (\h -> joinGroup' h joinRequest)
-            liftIO $ putStrLn "\n=======" >> print r
             case r of
               LeaderJoinGroupResp genId protoName memberId members -> do
-                liftIO $ print members
                 -- require protocol version 0
                 -- TODO: verify protocol version when deserializing and don't put it in the Members?
                 tmd <- findMetadataOrElse [topic] (stateTopicMetadata . at topic) KafkaFailedToFetchMetadata
@@ -138,43 +132,26 @@ specs = do
                 -- [(memberId, Subscription (ProtocolVersion 0, [topic], UserData $ KBytes ""))]
                 let syncRequest = SyncGroupReq (groupId, genId, memberId, assignments) :: SyncGroupRequest (Assignment KafkaBytes)
                 r' <- withBrokerHandle broker (\h -> syncGroup' h syncRequest)
-                forever $
-                  case r' of
-                    EmptySyncGroupResp -> do
-                      liftIO $ threadDelay 1000000
-                      descResp <- withBrokerHandle broker (\h -> makeRequest h $ DescribeGroupRR $ DescribeGroupReq [groupId])
-                      liftIO $ print descResp
-                      r'' <- withBrokerHandle broker (\h -> syncGroup' h syncRequest)
-                      liftIO $ print r''
-                    SyncGroupResp _ -> liftIO $ print r'
-                liftIO $ print r'
+                case r' of
+                  EmptySyncGroupResp -> return ()
+                  SyncGroupResp _ -> return ()
                 return (1 :: Int)
               FollowerJoinGroupResp genId protoName leaderId memberId -> do
-                liftIO $ print "hi!!!"
                 let syncRequest = SyncGroupReq (groupId, genId, memberId, []) :: SyncGroupRequest (Assignment KafkaBytes)
                 r' <- withBrokerHandle broker (\h -> syncGroup' h syncRequest)
-                liftIO $ print r'
                 case r' of
                   SyncGroupResp (Assignment (_, topicPartitions, _)) -> do
                     let offsetFetch = OffsetFetchReq (groupId, topicPartitions)
                     OffsetFetchResp tpOffsets <- withBrokerHandle broker (\h -> makeRequest h $ OffsetFetchRR offsetFetch)
-                    liftIO $ print tpOffsets
                     let offsetCommit = OffsetCommitReqV2 (groupId, genId, memberId, -1, map (\ (t, ps) -> (t, map (\ (p, o, m, err) -> (p, o, m)) ps)) tpOffsets)
                     offsetCommitResponse <- withBrokerHandle broker (\h -> makeRequest h $ OffsetCommitV2RR offsetCommit)
-                    liftIO $ print offsetCommitResponse
                     let heartbeat = HeartbeatReq (groupId, genId, memberId)
                     heartbeatResponse <- withBrokerHandle broker (\h -> makeRequest h $ HeartbeatRR heartbeat)
-                    liftIO $ print heartbeatResponse
                     leaveGroupResponse <- withBrokerHandle broker (\h -> makeRequest h $ LeaveGroupRR $ LeaveGroupReq (groupId, memberId))
-                    liftIO $ print leaveGroupResponse
                     return "oh wow..."
-                  SyncGroupRespFailure e -> do
-                    liftIO $ print e
-                    return "holy shit!"
+                  SyncGroupRespFailure e -> return "holy shit!"
                 return 2
-              JoinGroupRespFailure err -> do
-                liftIO $ print "SAD!!! :-("
-                return 3
+              JoinGroupRespFailure err -> return 3
           _ -> throwError KafkaFailedToFetchMetadata
       result `shouldSatisfy` isRight
 

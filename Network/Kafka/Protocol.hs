@@ -50,10 +50,8 @@ data ReqResp a where
 
 doRequest' :: (Deserializable a, MonadIO m) => CorrelationId -> Handle -> Request -> m (Either String a)
 doRequest' correlationId h r = do
-  liftIO $ print r
   rawLength <- liftIO $ do
     let bs = requestBytes r
-    liftIO $ print bs
     B.hPut h $ bs
     hFlush h
     B.hGet h 4
@@ -61,7 +59,6 @@ doRequest' correlationId h r = do
     Left s -> return $ Left s
     Right dataLength -> do
       responseBytes <- liftIO $ B.hGet h dataLength
-      liftIO $ print responseBytes
       return $ flip runGet responseBytes $ do
         correlationId' <- deserialize
         unless (correlationId == correlationId') $ fail ("Expected " ++ show correlationId ++ " but got " ++ show correlationId')
@@ -117,95 +114,6 @@ instance Deserializable a => Deserializable (JoinGroupResponse a) where
         [] -> return $ FollowerJoinGroupResp genId protoName leaderId myId
         _ -> return $ LeaderJoinGroupResp genId protoName myId members
       _ -> return $ JoinGroupRespFailure e
-
-{-
-correlation id (1): \NUL\NUL\NUL\SOH
-list len (1): \NUL\NUL\NUL\SOH
-  error code (0): \NUL\NUL
-  str len (18): \NUL\DC2
-    milena-test-client
-  str len (6): \NUL\ACK
-    Stable
-  str len (8): \NUL\b
-    consumer
-  str len (5): \NUL\ENQ
-    range
-  list len (1): \NUL\NUL\NUL\SOH
-    str len (47): \NUL/
-      consumer-1-80b9c48a-b385-4298-a543-07215ec3e41b
-    str len (10): \NUL\n
-      consumer-1
-    str len (14): \NUL\SO
-      /192.168.1.134
-    bytes len (23): \NUL\NUL\NUL\ETB
-      \NUL\NUL\NUL\NUL\NUL\SOH\NUL\vmilena-test\NUL\NUL\NUL\NUL
-    bytes len (75): \NUL\NUL\NULK
-      ProtocolVersion int16 (0): \NUL\NUL
-      array len (1): \NUL\NUL\NUL\SOH
-        str len (11): \NUL\v
-          milena-test
-        array len (12): \NUL\NUL\NUL\f
-          PartitionId: \NUL\NUL\NUL\NUL
-          \NUL\NUL\NUL\SOH
-          \NUL\NUL\NUL\STX
-          \NUL\NUL\NUL\ETX
-          \NUL\NUL\NUL\EOT
-          \NUL\NUL\NUL\ENQ
-          \NUL\NUL\NUL\ACK
-          \NUL\NUL\NUL\a
-          \NUL\NUL\NUL\b
-          \NUL\NUL\NUL\t
-          \NUL\NUL\NUL\n
-          \NUL\NUL\NUL\v
-        bytes len (0): \NUL\NUL\NUL\NUL
-
-correlation id (1): \NUL\NUL\NUL\SOH
-array len (1): \NUL\NUL\NUL\SOH
-  error code: (0): \NUL\NUL
-  str len (18): \NUL\DC2
-    milena-test-client
-  str len (4): \NUL\EOT
-    Dead
-  str len (0): \NUL\NUL
-  str len (0): \NUL\NUL
-  array len (0): \NUL\NUL\NUL\NUL
-
-correlation id (10): \NUL\NUL\NUL\n
-array len (1): \NUL\NUL\NUL\SOH
-  error code (0): \NUL\NUL
-  str len (18): \NUL\DC2
-    milena-test-client
-  str len (6): \NUL\ACK
-    Stable
-  str len (8): \NUL\b
-    consumer
-  str len (5): \NUL\ENQ
-    range
-  array len (1): \NUL\NUL\NUL\SOH
-    str len (55): \NUL7
-      milena-test-client-33b73ee3-bf90-4299-b0b4-31c73f51b045
-    str len (18): \NUL\DC2
-      milena-test-client
-    str len (14): \NUL\SO
-      /192.168.1.134
-    bytes len (23): \NUL\NUL\NUL\ETB
-      \NUL\NUL\NUL\NUL\NUL\SOH\NUL\vmilena-test\NUL\NUL\NUL\NUL
-    bytes len (0): \NUL\NUL\NUL\NUL
-
-newtype Assignment a = Assignment (ProtocolVersion, [(TopicName, [Partition])], UserData a) deriving (Show, Eq, Deserializable, Serializable)
-DescribeGroupResponse => [ErrorCode GroupId State ProtocolType Protocol Members]
-  ErrorCode => int16
-  GroupId => string
-  State => string
-  ProtocolType => string
-  Protocol => string
-  Members => [MemberId ClientId ClientHost MemberMetadata MemberAssignment]
-    MemberId => string
-    ClientId => string
-    ClientHost => string
-    MemberMetadata => bytes
-    MemberAssignment => bytes
--}
 
 newtype DescribeGroupRequest = DescribeGroupReq [GroupId] deriving (Show, Eq, Serializable)
 newtype DescribeGroupResponse = DescribeGroupResp [(KafkaError, GroupId, GroupState, ProtocolType, ProtocolName, [(GroupMemberId, ClientId, ClientHost, MemberMetadata, MemberAssignment)])] deriving (Show, Eq, Deserializable)
