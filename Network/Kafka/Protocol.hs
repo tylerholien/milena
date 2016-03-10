@@ -41,14 +41,12 @@ data ReqResp a where
   GroupCoordinatorRR :: MonadIO m => GroupCoordinatorRequest -> ReqResp (m GroupCoordinatorResponse)
   HeartbeatRR        :: MonadIO m => HeartbeatRequest        -> ReqResp (m HeartbeatResponse)
   LeaveGroupRR       :: MonadIO m => LeaveGroupRequest       -> ReqResp (m LeaveGroupResponse)
-  DescribeGroupRR       :: MonadIO m => DescribeGroupRequest       -> ReqResp (m DescribeGroupResponse)
+  DescribeGroupRR    :: MonadIO m => DescribeGroupRequest    -> ReqResp (m DescribeGroupResponse)
 
   JoinGroupRR        :: (MonadIO m, Deserializable a, Serializable a, Eq a, Show a) =>
     JoinGroupRequest a -> ReqResp (m (JoinGroupResponse a))
   SyncGroupRR        :: (MonadIO m, Deserializable a, Serializable a, Eq a, Show a) =>
     SyncGroupRequest a -> ReqResp (m (SyncGroupResponse a))
-  -- DescribeGroupRR    :: (MonadIO m, Deserializable a, Eq a, Show a) =>
-  --   DescribeGroupRequest -> ReqResp (m (DescribeGroupResponse a))
 
 doRequest' :: (Deserializable a, MonadIO m) => CorrelationId -> Handle -> Request -> m (Either String a)
 doRequest' correlationId h r = do
@@ -217,12 +215,17 @@ type MemberMetadata = KafkaBytes
 type MemberAssignment = KafkaBytes
 
 newtype SyncGroupRequest a = SyncGroupReq (GroupId, GenerationId, GroupMemberId, [GroupAssignment a]) deriving (Show, Eq, Serializable)
-newtype GroupAssignment a = GroupAssignment (GroupMemberId, a) deriving (Show, Eq, Deserializable, Serializable)
+newtype GroupAssignment a = GroupAssignment (GroupMemberId, a) deriving (Show, Eq, Deserializable)
 
 data SyncGroupResponse a = SyncGroupResp a
                          | EmptySyncGroupResp
                          | SyncGroupRespFailure KafkaError
                          deriving (Show, Eq)
+
+instance Serializable a => Serializable (GroupAssignment a) where
+  serialize (GroupAssignment (memberId, memberAssignment)) = do
+    let bytes = runPut $ serialize memberAssignment
+    serialize (memberId, KBytes bytes)
 
 instance Deserializable a => Deserializable (SyncGroupResponse a) where
   deserialize = do

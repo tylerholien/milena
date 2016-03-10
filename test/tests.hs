@@ -8,7 +8,7 @@ import Data.List (sort)
 import qualified Data.List.NonEmpty as NE
 import Control.Concurrent (threadDelay)
 import Control.Lens
-import Control.Monad (forever, unless)
+import Control.Monad (unless)
 import Control.Monad.Except (catchError, throwError)
 import Control.Monad.Trans (liftIO)
 import Network.Kafka
