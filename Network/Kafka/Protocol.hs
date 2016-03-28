@@ -51,8 +51,7 @@ data ReqResp a where
 doRequest' :: (Deserializable a, MonadIO m) => CorrelationId -> Handle -> Request -> m (Either String a)
 doRequest' correlationId h r = do
   rawLength <- liftIO $ do
-    let bs = requestBytes r
-    B.hPut h $ bs
+    B.hPut h $ requestBytes r
     hFlush h
     B.hGet h 4
   case runGet (liftM fromIntegral getWord32be) rawLength of

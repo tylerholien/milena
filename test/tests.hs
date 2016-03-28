@@ -108,8 +108,8 @@ specs = do
         use stateAddresses
       result `shouldBe` fmap NE.nub result
 
-  describe "JoinGroupRequest" $
-    it "makes join requests" $ do
+  describe "joining a group" $
+    it "hacked together test during development - replace when API is more fleshed out" $ do
       result <- run $ do
         let groupId = "milena-test-client"
         resp <- withAddressHandle ("localhost", 9092) (flip groupCoordinator' $ GroupCoordinatorReq groupId)
@@ -129,7 +129,6 @@ specs = do
                     memberCount    = length members
                     partitionCount = length partitions
                     assignments    = map (\ (memberId', Subscription (ProtocolVersion v, ts, userData)) -> GroupAssignment (memberId', Assignment (0, [(topic, sort partitions)], userData))) members
-                -- [(memberId, Subscription (ProtocolVersion 0, [topic], UserData $ KBytes ""))]
                 let syncRequest = SyncGroupReq (groupId, genId, memberId, assignments) :: SyncGroupRequest (Assignment KafkaBytes)
                 r' <- withBrokerHandle broker (\h -> syncGroup' h syncRequest)
                 case r' of
@@ -146,10 +145,10 @@ specs = do
                     let offsetCommit = OffsetCommitReqV2 (groupId, genId, memberId, -1, map (\ (t, ps) -> (t, map (\ (p, o, m, err) -> (p, o, m)) ps)) tpOffsets)
                     offsetCommitResponse <- withBrokerHandle broker (\h -> makeRequest h $ OffsetCommitV2RR offsetCommit)
                     let heartbeat = HeartbeatReq (groupId, genId, memberId)
-                    heartbeatResponse <- withBrokerHandle broker (\h -> makeRequest h $ HeartbeatRR heartbeat)
-                    leaveGroupResponse <- withBrokerHandle broker (\h -> makeRequest h $ LeaveGroupRR $ LeaveGroupReq (groupId, memberId))
-                    return "oh wow..."
-                  SyncGroupRespFailure e -> return "holy shit!"
+                    heartbeatResponse <- withBrokerHandle broker (\h -> heartbeat' h heartbeat)
+                    leaveGroupResponse <- withBrokerHandle broker (\h -> leaveGroup' h $ LeaveGroupReq (groupId, memberId))
+                    return $ show leaveGroupResponse
+                  SyncGroupRespFailure e -> return $ show e
                 return 2
               JoinGroupRespFailure err -> return 3
           _ -> throwError KafkaFailedToFetchMetadata

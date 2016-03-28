@@ -5,6 +5,8 @@ module Network.Kafka.Group
   ( groupCoordinator'
   , joinGroup'
   , syncGroup'
+  , leaveGroup'
+  , heartbeat'
   ) where
 
 import System.IO
@@ -22,6 +24,12 @@ joinGroup' h request = makeRequest h $ JoinGroupRR request
 
 syncGroup' :: (Show a, Eq a, Deserializable a, Serializable a) => Handle -> SyncGroupRequest a -> Kafka (SyncGroupResponse a)
 syncGroup' h request = makeRequest h $ SyncGroupRR request
+
+leaveGroup' :: Handle -> LeaveGroupRequest -> Kafka LeaveGroupResponse
+leaveGroup' h request = makeRequest h $ LeaveGroupRR request
+
+heartbeat' :: Handle -> HeartbeatRequest -> Kafka HeartbeatResponse
+heartbeat' h request = makeRequest h $ HeartbeatRR request
 
 -- let rangeAssignmentProtocol = (0 :: Int16, ["milena-test" :: TopicName], "" :: KafkaBytes)
 --     theBytes = runPut $ serialize rangeAssignmentProtocol
