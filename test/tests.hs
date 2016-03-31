@@ -2,30 +2,31 @@
 
 module Main where
 
-import Data.Functor
-import Data.Either (isRight, isLeft)
-import Data.List (sort)
-import qualified Data.List.NonEmpty as NE
-import Control.Concurrent (threadDelay)
-import Control.Lens
-import Control.Monad (unless)
-import Control.Monad.Except (catchError, throwError)
-import Control.Monad.Trans (liftIO)
-import Network.Kafka
-import Network.Kafka.Consumer
-import Network.Kafka.Group
-import Network.Kafka.Group.Consumer.Protocol
-import Network.Kafka.Producer
-import Test.Tasty
-import Test.Tasty.Hspec
-import Test.Tasty.QuickCheck
-import qualified Data.ByteString.Char8 as B
+import           Control.Arrow                         (second)
+import           Control.Concurrent                    (threadDelay)
+import           Control.Lens
+import           Control.Monad                         (unless)
+import           Control.Monad.Except                  (catchError, throwError)
+import           Control.Monad.Trans                   (liftIO)
+import qualified Data.ByteString.Char8                 as B
+import           Data.Either                           (isLeft, isRight)
+import           Data.Functor
+import           Data.List                             (sort)
+import qualified Data.List.NonEmpty                    as NE
+import           Network.Kafka
+import           Network.Kafka.Consumer
+import           Network.Kafka.Group
+import           Network.Kafka.Group.Consumer.Protocol
+import           Network.Kafka.Producer
+import           Test.Tasty
+import           Test.Tasty.Hspec
+import           Test.Tasty.QuickCheck
 
-import Network.Kafka.Protocol
-import Data.Int
-import Data.Serialize.Put
+import           Data.Int
+import           Data.Serialize.Put
+import           Network.Kafka.Protocol
 
-import Prelude
+import           Prelude
 
 main :: IO ()
 main = testSpec "the specs" specs >>= defaultMain
@@ -115,8 +116,8 @@ specs = do
         resp <- withAddressHandle ("localhost", 9092) (flip groupCoordinator' $ GroupCoordinatorReq groupId)
         case resp of
           GroupCoordinatorResp (NoError, broker) -> do
-            let rangeAssignmentProtocol = Subscription (0, [topic], UserData $ KBytes "")
-                joinRequest = JoinGroupReq (groupId, 30000, "", "consumer", [GroupProtocol ("range", rangeAssignmentProtocol)])
+            let rangeAssignmentProtocol = subscriptionV0 [topic] $ UserData $ KBytes ""
+                joinRequest = JoinGroupReq (groupId, 30000, "", protocolType, [GroupProtocol ("range", rangeAssignmentProtocol)])
             r <- withBrokerHandle broker (\h -> joinGroup' h joinRequest)
             case r of
               LeaderJoinGroupResp genId protoName memberId members -> do
@@ -128,7 +129,7 @@ specs = do
                 let partitions     = tmd ^.. partitionsMetadata . folded . partitionId
                     memberCount    = length members
                     partitionCount = length partitions
-                    assignments    = map (\ (memberId', Subscription (ProtocolVersion v, ts, userData)) -> GroupAssignment (memberId', Assignment (0, [(topic, sort partitions)], userData))) members
+                    assignments    = map (\ (memberId', Subscription (ProtocolVersion v, ts, userData)) -> GroupAssignment (memberId', assignmentV0 [(topic, sort partitions)] userData)) members
                 let syncRequest = SyncGroupReq (groupId, genId, memberId, assignments) :: SyncGroupRequest (Assignment KafkaBytes)
                 r' <- withBrokerHandle broker (\h -> syncGroup' h syncRequest)
                 case r' of
@@ -142,7 +143,7 @@ specs = do
                   SyncGroupResp (Assignment (_, topicPartitions, _)) -> do
                     let offsetFetch = OffsetFetchReq (groupId, topicPartitions)
                     OffsetFetchResp tpOffsets <- withBrokerHandle broker (\h -> makeRequest h $ OffsetFetchRR offsetFetch)
-                    let offsetCommit = OffsetCommitReqV2 (groupId, genId, memberId, -1, map (\ (t, ps) -> (t, map (\ (p, o, m, err) -> (p, o, m)) ps)) tpOffsets)
+                    let offsetCommit = OffsetCommitReqV2 (groupId, genId, memberId, -1, map (second (map (\ (p, o, m, err) -> (p, o, m)))) tpOffsets)
                     offsetCommitResponse <- withBrokerHandle broker (\h -> makeRequest h $ OffsetCommitV2RR offsetCommit)
                     let heartbeat = HeartbeatReq (groupId, genId, memberId)
                     heartbeatResponse <- withBrokerHandle broker (\h -> heartbeat' h heartbeat)
