@@ -145,7 +145,7 @@ mkKafkaState cid addy =
                (addy :| [])
 
 addKafkaAddress :: KafkaAddress -> KafkaState -> KafkaState
-addKafkaAddress = over stateAddresses . NE.nub .: cons
+addKafkaAddress = over stateAddresses . NE.nub .: NE.cons
   where infixr 9 .:
         (.:) :: (c -> d) -> (a -> b -> c) -> a -> b -> d
         (.:) = (.).(.)
