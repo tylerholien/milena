@@ -76,7 +76,10 @@ data RequestMessage = MetadataRequest MetadataRequest
                     deriving (Show, Eq)
 
 newtype MetadataRequest = MetadataReq [TopicName] deriving (Show, Eq, Serializable, Deserializable)
-newtype TopicName = TName { _tName :: KafkaString } deriving (Show, Eq, Ord, Deserializable, Serializable, IsString)
+newtype TopicName = TName { _tName :: KafkaString } deriving (Eq, Ord, Deserializable, Serializable, IsString)
+
+instance Show TopicName where
+  show = show . B.unpack . _kString. _tName
 
 newtype KafkaBytes = KBytes { _kafkaByteString :: ByteString } deriving (Show, Eq, IsString)
 newtype KafkaString = KString { _kString :: ByteString } deriving (Show, Eq, Ord, IsString)
