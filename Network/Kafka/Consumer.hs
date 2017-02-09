@@ -18,7 +18,7 @@ ordinaryConsumerId :: ReplicaId
 ordinaryConsumerId = ReplicaId (-1)
 
 -- | Construct a fetch request from the values in the state.
-fetchRequest :: Offset -> Partition -> TopicName -> Kafka FetchRequest
+fetchRequest :: Kafka m => Offset -> Partition -> TopicName -> m FetchRequest
 fetchRequest o p topic = do
   wt <- use stateWaitTime
   ws <- use stateWaitSize
@@ -26,10 +26,10 @@ fetchRequest o p topic = do
   return $ FetchReq (ordinaryConsumerId, wt, ws, [(topic, [(p, o, bs)])])
 
 -- | Execute a fetch request and get the raw fetch response.
-fetch' :: Handle -> FetchRequest -> Kafka FetchResponse
+fetch' :: Kafka m => Handle -> FetchRequest -> m FetchResponse
 fetch' h request = makeRequest h $ FetchRR request
 
-fetch :: Offset -> Partition -> TopicName -> Kafka FetchResponse
+fetch :: Kafka m => Offset -> Partition -> TopicName -> m FetchResponse
 fetch o p topic = do
   broker <- getTopicPartitionLeader topic p
   withBrokerHandle broker (\handle -> fetch' handle =<< fetchRequest o p topic)
