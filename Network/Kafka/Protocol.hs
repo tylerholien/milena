@@ -262,13 +262,13 @@ apiVersion :: RequestMessage -> ApiVersion
 apiVersion _ = ApiVersion 0 -- everything is at version 0 right now
 
 apiKey :: RequestMessage -> ApiKey
-apiKey (ProduceRequest{}) = ApiKey 0
-apiKey (FetchRequest{}) = ApiKey 1
-apiKey (OffsetRequest{}) = ApiKey 2
-apiKey (MetadataRequest{}) = ApiKey 3
-apiKey (OffsetCommitRequest{}) = ApiKey 8
-apiKey (OffsetFetchRequest{}) = ApiKey 9
-apiKey (GroupCoordinatorRequest{}) = ApiKey 10
+apiKey ProduceRequest{} = ApiKey 0
+apiKey FetchRequest{} = ApiKey 1
+apiKey OffsetRequest{} = ApiKey 2
+apiKey MetadataRequest{} = ApiKey 3
+apiKey OffsetCommitRequest{} = ApiKey 8
+apiKey OffsetFetchRequest{} = ApiKey 9
+apiKey GroupCoordinatorRequest{} = ApiKey 10
 
 instance Serializable RequestMessage where
   serialize (ProduceRequest r) = serialize r
