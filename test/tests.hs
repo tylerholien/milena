@@ -55,13 +55,18 @@ specs = do
       result <- run $ do
         requireAllAcks
         info <- brokerPartitionInfo topic
-        let Just PartitionAndLeader { _palLeader = leader, _palPartition = partition } = getPartitionByKey (B.pack key) info
-            payload = [(TopicAndPartition topic partition, groupMessagesToSet messages)]
-            s = stateBrokers . at leader
-        [(_topicName, [(_, NoError, offset)])] <- _produceResponseFields <$> send leader payload
-        broker <- findMetadataOrElse [topic] s (KafkaInvalidBroker leader)
-        resp <- withBrokerHandle broker (\handle -> fetch' handle =<< fetchRequest offset partition topic)
-        return $ fmap tamPayload . fetchMessages $ resp
+
+        case getPartitionByKey (B.pack key) info of
+          Just PartitionAndLeader { _palLeader = leader, _palPartition = partition } -> do
+            let payload = [(TopicAndPartition topic partition, groupMessagesToSet messages)]
+                s = stateBrokers . at leader
+            [(_topicName, [(_, NoError, offset)])] <- _produceResponseFields <$> send leader payload
+            broker <- findMetadataOrElse [topic] s (KafkaInvalidBroker leader)
+            resp <- withBrokerHandle broker (\handle -> fetch' handle =<< fetchRequest offset partition topic)
+            return $ fmap tamPayload . fetchMessages $ resp
+
+          Nothing -> fail "Could not deduce partition"
+
       result `shouldBe` Right (tamPayload <$> messages)
 
     prop "can roundtrip keyed messages" $ \(NonEmpty ms) key -> do
@@ -70,10 +75,14 @@ specs = do
       result <- run $ do
         requireAllAcks
         produceResps <- produceMessages messages
-        let [[(_topicName, [(partition, NoError, offset)])]] = map _produceResponseFields produceResps
 
-        resp <- fetch offset partition topic
-        return $ fmap tamPayload . fetchMessages $ resp
+        case map _produceResponseFields produceResps of
+          [[(_topicName, [(partition, NoError, offset)])]] -> do
+            resp <- fetch offset partition topic
+            return $ fmap tamPayload . fetchMessages $ resp
+
+          _ -> fail "Unexpected produce response"
+
       result `shouldBe` Right (tamPayload <$> messages)
 
   describe "withAddressHandle" $ do
