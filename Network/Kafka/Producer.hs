@@ -99,7 +99,7 @@ defaultMessageKey = Key Nothing
 
 -- | Default: @0@
 defaultMessageAttributes :: Attributes
-defaultMessageAttributes = 0
+defaultMessageAttributes = Attributes NoCompression
 
 -- | Construct a message from a string of bytes using default attributes.
 makeMessage :: ByteString -> Message

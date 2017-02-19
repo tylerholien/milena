@@ -14,6 +14,7 @@ import Control.Exception (Exception)
 import Control.Lens
 import Control.Monad (replicateM, liftM2, liftM3, liftM4, liftM5, unless)
 import Control.Monad.IO.Class (MonadIO, liftIO)
+import Data.Bits ((.&.))
 import Data.ByteString.Char8 (ByteString)
 import Data.ByteString.Lens (unpackedChars)
 import Data.Digest.CRC32
@@ -153,9 +154,11 @@ newtype Message =
   Message { _messageFields :: (Crc, MagicByte, Attributes, Key, Value) }
   deriving (Show, Eq, Deserializable)
 
+data CompressionCodec = NoCompression | Gzip deriving (Show, Eq)
+
 newtype Crc = Crc Int32 deriving (Show, Eq, Serializable, Deserializable, Num, Integral, Ord, Real, Enum)
 newtype MagicByte = MagicByte Int8 deriving (Show, Eq, Serializable, Deserializable, Num, Integral, Ord, Real, Enum)
-newtype Attributes = Attributes Int8 deriving (Show, Eq, Serializable, Deserializable, Num, Integral, Ord, Real, Enum)
+data Attributes = Attributes { _compressionCodec :: CompressionCodec } deriving (Show, Eq)
 
 newtype Key = Key { _keyBytes :: Maybe KafkaBytes } deriving (Show, Eq)
 newtype Value = Value { _valueBytes :: Maybe KafkaBytes } deriving (Show, Eq)
@@ -305,6 +308,15 @@ instance Serializable MessageSet where
     serialize l
     putByteString bytes
 
+instance Serializable Attributes where
+  serialize = serialize . bits
+    where bits :: Attributes -> Int8
+          bits = codecValue . _compressionCodec
+
+          codecValue :: CompressionCodec -> Int8
+          codecValue NoCompression = 0
+          codecValue Gzip = 1
+
 instance Serializable KafkaBytes where
   serialize (KBytes bs) = do
     let l = fromIntegral (B.length bs) :: Int32
@@ -363,6 +375,20 @@ instance Deserializable Leader where
     x <- deserialize :: Get Int32
     let l = Leader $ if x == -1 then Nothing else Just x
     return l
+
+instance Deserializable Attributes where
+  deserialize = do
+    i <- deserialize :: Get Int8
+    codec <- case compressionCodecFromValue i of
+      Just c -> return c
+      Nothing -> fail $ "Unknown compression codec value found in: " ++ show i
+    return $ Attributes codec
+
+compressionCodecFromValue :: Int8 -> Maybe CompressionCodec
+compressionCodecFromValue i | eq 1 = Just Gzip
+                            | eq 0 = Just NoCompression
+                            | otherwise = Nothing
+                            where eq y = i .&. y == y
 
 instance Deserializable KafkaBytes where
   deserialize = do
