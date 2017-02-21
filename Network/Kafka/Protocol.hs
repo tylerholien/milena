@@ -12,7 +12,7 @@ import Control.Applicative
 import Control.Category (Category(..))
 import Control.Exception (Exception)
 import Control.Lens
-import Control.Monad (replicateM, liftM, liftM2, liftM3, liftM4, liftM5, unless)
+import Control.Monad (replicateM, liftM2, liftM3, liftM4, liftM5, unless)
 import Control.Monad.IO.Class (MonadIO, liftIO)
 import Data.ByteString.Char8 (ByteString)
 import Data.ByteString.Lens (unpackedChars)
@@ -39,7 +39,7 @@ doRequest' correlationId h r = do
     B.hPut h $ requestBytes r
     hFlush h
     B.hGet h 4
-  case runGet (liftM fromIntegral getWord32be) rawLength of
+  case runGet (fmap fromIntegral getWord32be) rawLength of
     Left s -> return $ Left s
     Right dataLength -> do
       responseBytes <- liftIO $ B.hGet h dataLength
@@ -262,13 +262,13 @@ apiVersion :: RequestMessage -> ApiVersion
 apiVersion _ = ApiVersion 0 -- everything is at version 0 right now
 
 apiKey :: RequestMessage -> ApiKey
-apiKey (ProduceRequest{}) = ApiKey 0
-apiKey (FetchRequest{}) = ApiKey 1
-apiKey (OffsetRequest{}) = ApiKey 2
-apiKey (MetadataRequest{}) = ApiKey 3
-apiKey (OffsetCommitRequest{}) = ApiKey 8
-apiKey (OffsetFetchRequest{}) = ApiKey 9
-apiKey (GroupCoordinatorRequest{}) = ApiKey 10
+apiKey ProduceRequest{} = ApiKey 0
+apiKey FetchRequest{} = ApiKey 1
+apiKey OffsetRequest{} = ApiKey 2
+apiKey MetadataRequest{} = ApiKey 3
+apiKey OffsetCommitRequest{} = ApiKey 8
+apiKey OffsetFetchRequest{} = ApiKey 9
+apiKey GroupCoordinatorRequest{} = ApiKey 10
 
 instance Serializable RequestMessage where
   serialize (ProduceRequest r) = serialize r
@@ -408,10 +408,10 @@ instance (Deserializable a, Deserializable b, Deserializable c, Deserializable d
 instance (Deserializable a, Deserializable b, Deserializable c, Deserializable d, Deserializable e) => Deserializable ((,,,,) a b c d e) where
   deserialize = liftM5 (,,,,) deserialize deserialize deserialize deserialize deserialize
 
-instance Deserializable Int64 where deserialize = liftM fromIntegral getWord64be
-instance Deserializable Int32 where deserialize = liftM fromIntegral getWord32be
-instance Deserializable Int16 where deserialize = liftM fromIntegral getWord16be
-instance Deserializable Int8  where deserialize = liftM fromIntegral getWord8
+instance Deserializable Int64 where deserialize = fmap fromIntegral getWord64be
+instance Deserializable Int32 where deserialize = fmap fromIntegral getWord32be
+instance Deserializable Int16 where deserialize = fmap fromIntegral getWord16be
+instance Deserializable Int8  where deserialize = fmap fromIntegral getWord8
 
 -- * Generated lenses
 
