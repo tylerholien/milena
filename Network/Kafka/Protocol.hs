@@ -26,6 +26,8 @@ import System.IO
 import Numeric.Lens
 import Prelude hiding ((.), id)
 import qualified Data.ByteString.Char8 as B
+import qualified Data.ByteString.Lazy.Char8 as LB (fromStrict, toStrict)
+import qualified Codec.Compression.GZip as GZip (decompress)
 import qualified Network
 
 data ReqResp a where
@@ -355,13 +357,50 @@ instance Deserializable MessageSet where
   deserialize = do
     l <- deserialize :: Get Int32
     ms <- isolate (fromIntegral l) getMembers
-    return $ MessageSet ms
+
+    decompressed <- mapM decompress ms
+
+    return . MessageSet . concat $ decompressed
+
       where getMembers :: Get [MessageSetMember]
             getMembers = do
               wasEmpty <- isEmpty
               if wasEmpty
               then return []
               else liftM2 (:) deserialize getMembers <|> (remaining >>= getBytes >> return [])
+
+            decompress :: MessageSetMember -> Get [MessageSetMember]
+            decompress m = if isCompressed m
+                  then decompressSetMember m
+                  else return [m]
+
+            isCompressed :: MessageSetMember -> Bool
+            isCompressed = messageCompressed . _setMessage
+
+            messageCompressed :: Message -> Bool
+            messageCompressed (Message (_, _, att, _, _)) = _compressionCodec att /= NoCompression
+
+            decompressSetMember :: MessageSetMember -> Get [MessageSetMember]
+            decompressSetMember (MessageSetMember _ (Message (_, _, att, _, Value v))) = case v of
+              Just bytes -> decompressMessage (decompressor att) (_kafkaByteString bytes)
+              Nothing -> fail "Expecting a compressed message set, empty data set received"
+
+            decompressor :: Attributes -> (ByteString -> ByteString)
+            decompressor att = case _compressionCodec att of
+              Gzip -> LB.toStrict . GZip.decompress . LB.fromStrict
+              _ -> fail "Unsupported compression codec."
+
+            decompressMessage :: (ByteString -> ByteString) -> ByteString -> Get [MessageSetMember]
+            decompressMessage f = getDecompressedMembers . f
+
+            getDecompressedMembers :: ByteString -> Get [MessageSetMember]
+            getDecompressedMembers "" = return [] -- a compressed empty message
+            getDecompressedMembers val = do
+              let res = runGetPartial deserialize val :: Result MessageSetMember
+              case res of
+                Fail err _ -> fail err
+                Partial _ -> fail "Could not consume all available data"
+                Done v vv -> fmap (v :) (getDecompressedMembers vv)
 
 instance Deserializable MessageSetMember where
   deserialize = do

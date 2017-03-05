@@ -52,7 +52,8 @@ library
                        resource-pool >=0.2.3.2  && <0.3,
                        lifted-base   >=0.2.3.6  && <0.3,
                        murmur-hash   >=0.1.0.8  && <0.2,
-                       semigroups    >=0.16.2.2 && <0.19
+                       semigroups    >=0.16.2.2 && <0.19,
+                       zlib          >=0.6.1.2  && <0.7
 
 test-suite test
   default-language: Haskell2010
