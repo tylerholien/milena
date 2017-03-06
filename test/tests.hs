@@ -11,7 +11,7 @@ import Control.Monad.Trans (liftIO)
 import Network.Kafka
 import Network.Kafka.Consumer
 import Network.Kafka.Producer
-import Network.Kafka.Protocol (ProduceResponse(..), KafkaError(..))
+import Network.Kafka.Protocol (ProduceResponse(..), KafkaError(..), CompressionCodec(..))
 import Test.Tasty
 import Test.Tasty.Hspec
 import Test.Tasty.QuickCheck
@@ -37,11 +37,16 @@ specs = do
       result <- run . produceMessages $ byteMessages ms
       result `shouldSatisfy` isRight
 
-    prop "can produce multiple messages" $ \(ms, ms') -> do
+    prop "can produce compressed messages" $ \ms -> do
+      result <- run . produceCompressedMessages Gzip $ byteMessages ms
+      result `shouldSatisfy` isRight
+
+    prop "can produce multiple messages" $ \(ms, ms', ms'') -> do
       result <- run $ do
         r1 <- produceMessages $ byteMessages ms
         r2 <- produceMessages $ byteMessages ms'
-        return $ r1 ++ r2
+        r3 <- produceCompressedMessages Gzip $  byteMessages ms''
+        return $ r1 ++ r2 ++ r3
       result `shouldSatisfy` isRight
 
     prop "can fetch messages" $ do
@@ -58,7 +63,7 @@ specs = do
 
         case getPartitionByKey (B.pack key) info of
           Just PartitionAndLeader { _palLeader = leader, _palPartition = partition } -> do
-            let payload = [(TopicAndPartition topic partition, groupMessagesToSet messages)]
+            let payload = [(TopicAndPartition topic partition, groupMessages NoCompression messages)]
                 s = stateBrokers . at leader
             [(_topicName, [(_, NoError, offset)])] <- _produceResponseFields <$> send leader payload
             broker <- findMetadataOrElse [topic] s (KafkaInvalidBroker leader)
@@ -66,6 +71,21 @@ specs = do
             return $ fmap tamPayload . fetchMessages $ resp
 
           Nothing -> fail "Could not deduce partition"
+
+      result `shouldBe` Right (tamPayload <$> messages)
+
+    prop "can roundtrip compressed messages" $ \(NonEmpty ms) -> do
+      let messages = byteMessages ms
+      result <- run $ do
+        requireAllAcks
+        produceResps <- produceCompressedMessages Gzip messages
+
+        case map _produceResponseFields produceResps of
+          [[(_topicName, [(partition, NoError, offset)])]] -> do
+            resp <- fetch offset partition topic
+            return $ fmap tamPayload . fetchMessages $ resp
+
+          _ -> fail "Unexpected produce response"
 
       result `shouldBe` Right (tamPayload <$> messages)
 

@@ -27,7 +27,7 @@ import Numeric.Lens
 import Prelude hiding ((.), id)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB (fromStrict, toStrict)
-import qualified Codec.Compression.GZip as GZip (decompress)
+import qualified Codec.Compression.GZip as GZip (compress, decompress)
 import qualified Network
 
 data ReqResp a where
@@ -145,8 +145,9 @@ newtype Timeout =
 newtype Partition =
   Partition Int32 deriving (Show, Eq, Serializable, Deserializable, Num, Integral, Ord, Real, Enum)
 
-newtype MessageSet =
-  MessageSet { _messageSetMembers :: [MessageSetMember] } deriving (Show, Eq)
+data MessageSet = MessageSet { _messageSetMembers :: [MessageSetMember] }
+                | CompressedMessageSet { _codec :: CompressionCodec, _messageSetMembers :: [MessageSetMember] }
+  deriving (Show, Eq)
 data MessageSetMember =
   MessageSetMember { _setOffset :: Offset, _setMessage :: Message } deriving (Show, Eq)
 
@@ -309,6 +310,22 @@ instance Serializable MessageSet where
         l = fromIntegral (B.length bytes) :: Int32
     serialize l
     putByteString bytes
+
+  serialize (CompressedMessageSet codec messageSet) = serialize . MessageSet $ compress codec messageSet
+    where compress :: CompressionCodec -> [MessageSetMember] -> [MessageSetMember]
+          compress NoCompression ms = ms
+          compress c ms = [MessageSetMember (Offset (-1)) (message c ms)]
+
+          message :: CompressionCodec -> [MessageSetMember] -> Message
+          message c ms = Message (0, 0, Attributes c, Key Nothing, value (compressor c) ms)
+
+          compressor :: CompressionCodec -> (ByteString -> ByteString)
+          compressor c = case c of
+            Gzip -> LB.toStrict . GZip.compress . LB.fromStrict
+            _ -> fail "Unsupported compression codec"
+
+          value :: (ByteString -> ByteString) -> [MessageSetMember] -> Value
+          value c ms = Value . Just . KBytes $ c (runPut $ mapM_ serialize ms)
 
 instance Serializable Attributes where
   serialize = serialize . bits
