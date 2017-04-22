@@ -34,11 +34,11 @@ produceRequest ra ti ts =
 
 -- | Send messages to partition calculated by 'partitionAndCollate'.
 produceMessages :: Kafka m => [TopicAndMessage] -> m [ProduceResponse]
-produceMessages = prod (groupMessages NoCompression)
+produceMessages = prod (groupMessagesToSet NoCompression)
 
 -- | Send compressed messages to partition calculated by 'partitionAndCollate'.
 produceCompressedMessages :: Kafka m => CompressionCodec -> [TopicAndMessage] -> m [ProduceResponse]
-produceCompressedMessages c = prod (groupMessages c)
+produceCompressedMessages c = prod (groupMessagesToSet c)
 
 prod :: Kafka m => ([TopicAndMessage] -> MessageSet) -> [TopicAndMessage] -> m [ProduceResponse]
 prod g tams = do
@@ -46,12 +46,8 @@ prod g tams = do
   mapM (uncurry send) $ fmap M.toList <$> M.toList m
 
 -- | Create a protocol message set from a list of messages.
-{-# DEPRECATED groupMessagesToSet "Use groupMessages instead" #-}
-groupMessagesToSet :: [TopicAndMessage] -> MessageSet
-groupMessagesToSet = groupMessages NoCompression
-
-groupMessages :: CompressionCodec -> [TopicAndMessage] -> MessageSet
-groupMessages c xs = MessageSet c $ msm <$> xs
+groupMessagesToSet :: CompressionCodec -> [TopicAndMessage] -> MessageSet
+groupMessagesToSet c xs = MessageSet c $ msm <$> xs
     where msm = MessageSetMember (Offset (-1)) . _tamMessage
 
 -- | Group messages together with the leader they should be sent to.

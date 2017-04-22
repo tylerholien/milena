@@ -63,7 +63,7 @@ specs = do
 
         case getPartitionByKey (B.pack key) info of
           Just PartitionAndLeader { _palLeader = leader, _palPartition = partition } -> do
-            let payload = [(TopicAndPartition topic partition, groupMessages NoCompression messages)]
+            let payload = [(TopicAndPartition topic partition, groupMessagesToSet NoCompression messages)]
                 s = stateBrokers . at leader
             [(_topicName, [(_, NoError, offset)])] <- _produceResponseFields <$> send leader payload
             broker <- findMetadataOrElse [topic] s (KafkaInvalidBroker leader)
