@@ -51,11 +51,8 @@ groupMessagesToSet :: [TopicAndMessage] -> MessageSet
 groupMessagesToSet = groupMessages NoCompression
 
 groupMessages :: CompressionCodec -> [TopicAndMessage] -> MessageSet
-groupMessages c xs = msgSet c $ msm <$> xs
-    where msgSet NoCompression = MessageSet
-          msgSet cc = CompressedMessageSet cc
-
-          msm = MessageSetMember (Offset (-1)) . _tamMessage
+groupMessages c xs = MessageSet c $ msm <$> xs
+    where msm = MessageSetMember (Offset (-1)) . _tamMessage
 
 -- | Group messages together with the leader they should be sent to.
 partitionAndCollate :: Kafka m => [TopicAndMessage] -> m (M.Map Leader (M.Map TopicAndPartition [TopicAndMessage]))

@@ -145,8 +145,7 @@ newtype Timeout =
 newtype Partition =
   Partition Int32 deriving (Show, Eq, Serializable, Deserializable, Num, Integral, Ord, Real, Enum)
 
-data MessageSet = MessageSet { _messageSetMembers :: [MessageSetMember] }
-                | CompressedMessageSet { _codec :: CompressionCodec, _messageSetMembers :: [MessageSetMember] }
+data MessageSet = MessageSet { _codec :: CompressionCodec, _messageSetMembers :: [MessageSetMember] }
   deriving (Show, Eq)
 data MessageSetMember =
   MessageSetMember { _setOffset :: Offset, _setMessage :: Message } deriving (Show, Eq)
@@ -305,13 +304,12 @@ instance Serializable KafkaString where
     putByteString bs
 
 instance Serializable MessageSet where
-  serialize (MessageSet ms) = do
-    let bytes = runPut $ mapM_ serialize ms
+  serialize (MessageSet codec messageSet) = do
+    let bytes = runPut $ mapM_ serialize (compress codec messageSet)
         l = fromIntegral (B.length bytes) :: Int32
     serialize l
     putByteString bytes
 
-  serialize (CompressedMessageSet codec messageSet) = serialize . MessageSet $ compress codec messageSet
     where compress :: CompressionCodec -> [MessageSetMember] -> [MessageSetMember]
           compress NoCompression ms = ms
           compress c ms = [MessageSetMember (Offset (-1)) (message c ms)]
@@ -377,7 +375,7 @@ instance Deserializable MessageSet where
 
     decompressed <- mapM decompress ms
 
-    return . MessageSet . concat $ decompressed
+    return $ MessageSet NoCompression (concat decompressed)
 
       where getMembers :: Get [MessageSetMember]
             getMembers = do
