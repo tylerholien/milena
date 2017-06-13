@@ -21,6 +21,8 @@ cabal-version:       >=1.10
 extra-source-files:  README.md
 bug-reports:         https://github.com/adamflott/milena/issues
 tested-with:         GHC == 7.10.3, GHC == 8.0.1
+extra-source-files:
+    CHANGELOG.md
 
 source-repository head
   type: git
