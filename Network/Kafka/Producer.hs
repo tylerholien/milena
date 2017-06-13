@@ -1,4 +1,5 @@
 {-# LANGUAGE FlexibleContexts #-}
+
 module Network.Kafka.Producer where
 
 import Data.Bits ((.&.))
@@ -33,13 +34,20 @@ produceRequest ra ti ts =
 
 -- | Send messages to partition calculated by 'partitionAndCollate'.
 produceMessages :: Kafka m => [TopicAndMessage] -> m [ProduceResponse]
-produceMessages tams = do
-  m <- fmap (fmap groupMessagesToSet) <$> partitionAndCollate tams
+produceMessages = prod (groupMessagesToSet NoCompression)
+
+-- | Send compressed messages to partition calculated by 'partitionAndCollate'.
+produceCompressedMessages :: Kafka m => CompressionCodec -> [TopicAndMessage] -> m [ProduceResponse]
+produceCompressedMessages c = prod (groupMessagesToSet c)
+
+prod :: Kafka m => ([TopicAndMessage] -> MessageSet) -> [TopicAndMessage] -> m [ProduceResponse]
+prod g tams = do
+  m <- fmap (fmap g) <$> partitionAndCollate tams
   mapM (uncurry send) $ fmap M.toList <$> M.toList m
 
 -- | Create a protocol message set from a list of messages.
-groupMessagesToSet :: [TopicAndMessage] -> MessageSet
-groupMessagesToSet xs = MessageSet $ msm <$> xs
+groupMessagesToSet :: CompressionCodec -> [TopicAndMessage] -> MessageSet
+groupMessagesToSet c xs = MessageSet c $ msm <$> xs
     where msm = MessageSetMember (Offset (-1)) . _tamMessage
 
 -- | Group messages together with the leader they should be sent to.
@@ -99,7 +107,7 @@ defaultMessageKey = Key Nothing
 
 -- | Default: @0@
 defaultMessageAttributes :: Attributes
-defaultMessageAttributes = 0
+defaultMessageAttributes = Attributes NoCompression
 
 -- | Construct a message from a string of bytes using default attributes.
 makeMessage :: ByteString -> Message
