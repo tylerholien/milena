@@ -1,5 +1,3 @@
-{-# LANGUAGE FlexibleContexts #-}
-
 module Network.Kafka.Producer where
 
 import Data.Bits ((.&.))

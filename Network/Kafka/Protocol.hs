@@ -1,9 +1,3 @@
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
-{-# LANGUAGE GADTs #-}
-{-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE TemplateHaskell #-}
-{-# LANGUAGE Rank2Types #-}
-
 module Network.Kafka.Protocol
   ( module Network.Kafka.Protocol
   ) where
@@ -22,6 +16,7 @@ import Data.Int
 import Data.Serialize.Get
 import Data.Serialize.Put
 import GHC.Exts (IsString(..))
+import GHC.Generics (Generic)
 import System.IO
 import Numeric.Lens
 import Prelude hiding ((.), id)
@@ -63,12 +58,12 @@ class Serializable a where
 class Deserializable a where
   deserialize :: Get a
 
-newtype GroupCoordinatorResponse = GroupCoordinatorResp (KafkaError, Broker) deriving (Show, Eq, Deserializable)
+newtype GroupCoordinatorResponse = GroupCoordinatorResp (KafkaError, Broker) deriving (Show, Generic, Eq, Deserializable)
 
-newtype ApiKey = ApiKey Int16 deriving (Show, Eq, Deserializable, Serializable, Num, Integral, Ord, Real, Enum) -- numeric ID for API (i.e. metadata req, produce req, etc.)
-newtype ApiVersion = ApiVersion Int16 deriving (Show, Eq, Deserializable, Serializable, Num, Integral, Ord, Real, Enum)
-newtype CorrelationId = CorrelationId Int32 deriving (Show, Eq, Deserializable, Serializable, Num, Integral, Ord, Real, Enum)
-newtype ClientId = ClientId KafkaString deriving (Show, Eq, Deserializable, Serializable, IsString)
+newtype ApiKey = ApiKey Int16 deriving (Show, Eq, Deserializable, Serializable, Num, Integral, Ord, Real, Generic, Enum) -- numeric ID for API (i.e. metadata req, produce req, etc.)
+newtype ApiVersion = ApiVersion Int16 deriving (Show, Eq, Deserializable, Serializable, Num, Integral, Ord, Real, Generic, Enum)
+newtype CorrelationId = CorrelationId Int32 deriving (Show, Eq, Deserializable, Serializable, Num, Integral, Ord, Real, Generic, Enum)
+newtype ClientId = ClientId KafkaString deriving (Show, Eq, Deserializable, Serializable, Generic, IsString)
 
 data RequestMessage = MetadataRequest MetadataRequest
                     | ProduceRequest ProduceRequest
@@ -77,93 +72,93 @@ data RequestMessage = MetadataRequest MetadataRequest
                     | OffsetCommitRequest OffsetCommitRequest
                     | OffsetFetchRequest OffsetFetchRequest
                     | GroupCoordinatorRequest GroupCoordinatorRequest
-                    deriving (Show, Eq)
+                    deriving (Show, Generic, Eq)
 
-newtype MetadataRequest = MetadataReq [TopicName] deriving (Show, Eq, Serializable, Deserializable)
-newtype TopicName = TName { _tName :: KafkaString } deriving (Eq, Ord, Deserializable, Serializable, IsString)
+newtype MetadataRequest = MetadataReq [TopicName] deriving (Show, Eq, Serializable, Generic, Deserializable)
+newtype TopicName = TName { _tName :: KafkaString } deriving (Eq, Ord, Deserializable, Serializable, Generic, IsString)
 
 instance Show TopicName where
   show = show . B.unpack . _kString. _tName
 
-newtype KafkaBytes = KBytes { _kafkaByteString :: ByteString } deriving (Show, Eq, IsString)
-newtype KafkaString = KString { _kString :: ByteString } deriving (Show, Eq, Ord, IsString)
+newtype KafkaBytes = KBytes { _kafkaByteString :: ByteString } deriving (Show, Eq, Generic, IsString)
+newtype KafkaString = KString { _kString :: ByteString } deriving (Show, Eq, Ord, Generic, IsString)
 
 newtype ProduceResponse =
   ProduceResp { _produceResponseFields :: [(TopicName, [(Partition, KafkaError, Offset)])] }
-  deriving (Show, Eq, Deserializable, Serializable)
+  deriving (Show, Eq, Deserializable, Serializable, Generic)
 
 newtype OffsetResponse =
   OffsetResp { _offsetResponseFields :: [(TopicName, [PartitionOffsets])] }
-  deriving (Show, Eq, Deserializable)
+  deriving (Show, Eq, Deserializable, Generic)
 
 newtype PartitionOffsets =
   PartitionOffsets { _partitionOffsetsFields :: (Partition, KafkaError, [Offset]) }
-  deriving (Show, Eq, Deserializable)
+  deriving (Show, Eq, Deserializable, Generic)
 
 newtype FetchResponse =
   FetchResp { _fetchResponseFields :: [(TopicName, [(Partition, KafkaError, Offset, MessageSet)])] }
-  deriving (Show, Eq, Serializable, Deserializable)
+  deriving (Show, Eq, Serializable, Deserializable, Generic)
 
-newtype MetadataResponse = MetadataResp { _metadataResponseFields :: ([Broker], [TopicMetadata]) } deriving (Show, Eq, Deserializable)
-newtype Broker = Broker { _brokerFields :: (NodeId, Host, Port) } deriving (Show, Eq, Ord, Deserializable)
-newtype NodeId = NodeId { _nodeId :: Int32 } deriving (Show, Eq, Deserializable, Num, Integral, Ord, Real, Enum)
-newtype Host = Host { _hostKString :: KafkaString } deriving (Show, Eq, Ord, Deserializable, IsString)
-newtype Port = Port { _portInt :: Int32 } deriving (Show, Eq, Deserializable, Num, Integral, Ord, Real, Enum)
-newtype TopicMetadata = TopicMetadata { _topicMetadataFields :: (KafkaError, TopicName, [PartitionMetadata]) } deriving (Show, Eq, Deserializable)
-newtype PartitionMetadata = PartitionMetadata { _partitionMetadataFields :: (KafkaError, Partition, Leader, Replicas, Isr) } deriving (Show, Eq, Deserializable)
-newtype Leader = Leader { _leaderId :: Maybe Int32 } deriving (Show, Eq, Ord)
+newtype MetadataResponse = MetadataResp { _metadataResponseFields :: ([Broker], [TopicMetadata]) } deriving (Show, Eq, Deserializable, Generic)
+newtype Broker = Broker { _brokerFields :: (NodeId, Host, Port) } deriving (Show, Eq, Ord, Deserializable, Generic)
+newtype NodeId = NodeId { _nodeId :: Int32 } deriving (Show, Eq, Deserializable, Num, Integral, Ord, Real, Enum, Generic)
+newtype Host = Host { _hostKString :: KafkaString } deriving (Show, Eq, Ord, Deserializable, IsString, Generic)
+newtype Port = Port { _portInt :: Int32 } deriving (Show, Eq, Deserializable, Num, Integral, Ord, Real, Enum, Generic)
+newtype TopicMetadata = TopicMetadata { _topicMetadataFields :: (KafkaError, TopicName, [PartitionMetadata]) } deriving (Show, Eq, Deserializable, Generic)
+newtype PartitionMetadata = PartitionMetadata { _partitionMetadataFields :: (KafkaError, Partition, Leader, Replicas, Isr) } deriving (Show, Eq, Deserializable, Generic)
+newtype Leader = Leader { _leaderId :: Maybe Int32 } deriving (Show, Eq, Ord, Generic)
 
-newtype Replicas = Replicas [Int32] deriving (Show, Eq, Serializable, Deserializable)
-newtype Isr = Isr [Int32] deriving (Show, Eq, Deserializable)
+newtype Replicas = Replicas [Int32] deriving (Show, Eq, Serializable, Deserializable, Generic)
+newtype Isr = Isr [Int32] deriving (Show, Eq, Deserializable, Generic)
 
-newtype OffsetCommitResponse = OffsetCommitResp [(TopicName, [(Partition, KafkaError)])] deriving (Show, Eq, Deserializable)
-newtype OffsetFetchResponse = OffsetFetchResp [(TopicName, [(Partition, Offset, Metadata, KafkaError)])] deriving (Show, Eq, Deserializable)
+newtype OffsetCommitResponse = OffsetCommitResp [(TopicName, [(Partition, KafkaError)])] deriving (Show, Eq, Deserializable, Generic)
+newtype OffsetFetchResponse = OffsetFetchResp [(TopicName, [(Partition, Offset, Metadata, KafkaError)])] deriving (Show, Eq, Deserializable, Generic)
 
-newtype OffsetRequest = OffsetReq (ReplicaId, [(TopicName, [(Partition, Time, MaxNumberOfOffsets)])]) deriving (Show, Eq, Serializable)
-newtype Time = Time { _timeInt :: Int64 } deriving (Show, Eq, Serializable, Num, Integral, Ord, Real, Enum, Bounded)
-newtype MaxNumberOfOffsets = MaxNumberOfOffsets Int32 deriving (Show, Eq, Serializable, Num, Integral, Ord, Real, Enum)
+newtype OffsetRequest = OffsetReq (ReplicaId, [(TopicName, [(Partition, Time, MaxNumberOfOffsets)])]) deriving (Show, Eq, Serializable, Generic)
+newtype Time = Time { _timeInt :: Int64 } deriving (Show, Eq, Serializable, Num, Integral, Ord, Real, Enum, Bounded, Generic)
+newtype MaxNumberOfOffsets = MaxNumberOfOffsets Int32 deriving (Show, Eq, Serializable, Num, Integral, Ord, Real, Enum, Generic)
 
 newtype FetchRequest =
   FetchReq (ReplicaId, MaxWaitTime, MinBytes,
             [(TopicName, [(Partition, Offset, MaxBytes)])])
-  deriving (Show, Eq, Deserializable, Serializable)
+  deriving (Show, Eq, Deserializable, Serializable, Generic)
 
-newtype ReplicaId = ReplicaId Int32 deriving (Show, Eq, Num, Integral, Ord, Real, Enum, Serializable, Deserializable)
-newtype MaxWaitTime = MaxWaitTime Int32 deriving (Show, Eq, Num, Integral, Ord, Real, Enum, Serializable, Deserializable)
-newtype MinBytes = MinBytes Int32 deriving (Show, Eq, Num, Integral, Ord, Real, Enum, Serializable, Deserializable)
-newtype MaxBytes = MaxBytes Int32 deriving (Show, Eq, Num, Integral, Ord, Real, Enum, Serializable, Deserializable)
+newtype ReplicaId = ReplicaId Int32 deriving (Show, Eq, Num, Integral, Ord, Real, Enum, Serializable, Deserializable, Generic)
+newtype MaxWaitTime = MaxWaitTime Int32 deriving (Show, Eq, Num, Integral, Ord, Real, Enum, Serializable, Deserializable, Generic)
+newtype MinBytes = MinBytes Int32 deriving (Show, Eq, Num, Integral, Ord, Real, Enum, Serializable, Deserializable, Generic)
+newtype MaxBytes = MaxBytes Int32 deriving (Show, Eq, Num, Integral, Ord, Real, Enum, Serializable, Deserializable, Generic)
 
 newtype ProduceRequest =
   ProduceReq (RequiredAcks, Timeout,
               [(TopicName, [(Partition, MessageSet)])])
-  deriving (Show, Eq, Serializable)
+  deriving (Show, Eq, Serializable, Generic)
 
 newtype RequiredAcks =
-  RequiredAcks Int16 deriving (Show, Eq, Serializable, Deserializable, Num, Integral, Ord, Real, Enum)
+  RequiredAcks Int16 deriving (Show, Eq, Serializable, Deserializable, Num, Integral, Ord, Real, Enum, Generic)
 newtype Timeout =
-  Timeout Int32 deriving (Show, Eq, Serializable, Deserializable, Num, Integral, Ord, Real, Enum)
+  Timeout Int32 deriving (Show, Eq, Serializable, Deserializable, Num, Integral, Ord, Real, Enum, Generic)
 newtype Partition =
-  Partition Int32 deriving (Show, Eq, Serializable, Deserializable, Num, Integral, Ord, Real, Enum)
+  Partition Int32 deriving (Show, Eq, Serializable, Deserializable, Num, Integral, Ord, Real, Enum, Generic)
 
 data MessageSet = MessageSet { _codec :: CompressionCodec, _messageSetMembers :: [MessageSetMember] }
-  deriving (Show, Eq)
+  deriving (Show, Eq, Generic)
 data MessageSetMember =
-  MessageSetMember { _setOffset :: Offset, _setMessage :: Message } deriving (Show, Eq)
+  MessageSetMember { _setOffset :: Offset, _setMessage :: Message } deriving (Show, Eq, Generic)
 
-newtype Offset = Offset Int64 deriving (Show, Eq, Serializable, Deserializable, Num, Integral, Ord, Real, Enum)
+newtype Offset = Offset Int64 deriving (Show, Eq, Serializable, Deserializable, Num, Integral, Ord, Real, Enum, Generic)
 
 newtype Message =
   Message { _messageFields :: (Crc, MagicByte, Attributes, Key, Value) }
-  deriving (Show, Eq, Deserializable)
+  deriving (Show, Eq, Deserializable, Generic)
 
-data CompressionCodec = NoCompression | Gzip deriving (Show, Eq)
+data CompressionCodec = NoCompression | Gzip deriving (Show, Eq, Generic)
 
-newtype Crc = Crc Int32 deriving (Show, Eq, Serializable, Deserializable, Num, Integral, Ord, Real, Enum)
-newtype MagicByte = MagicByte Int8 deriving (Show, Eq, Serializable, Deserializable, Num, Integral, Ord, Real, Enum)
-data Attributes = Attributes { _compressionCodec :: CompressionCodec } deriving (Show, Eq)
+newtype Crc = Crc Int32 deriving (Show, Eq, Serializable, Deserializable, Num, Integral, Ord, Real, Enum, Generic)
+newtype MagicByte = MagicByte Int8 deriving (Show, Eq, Serializable, Deserializable, Num, Integral, Ord, Real, Enum, Generic)
+data Attributes = Attributes { _compressionCodec :: CompressionCodec } deriving (Show, Eq, Generic)
 
-newtype Key = Key { _keyBytes :: Maybe KafkaBytes } deriving (Show, Eq)
-newtype Value = Value { _valueBytes :: Maybe KafkaBytes } deriving (Show, Eq)
+newtype Key = Key { _keyBytes :: Maybe KafkaBytes } deriving (Show, Eq, Generic)
+newtype Value = Value { _valueBytes :: Maybe KafkaBytes } deriving (Show, Eq, Generic)
 
 data ResponseMessage = MetadataResponse MetadataResponse
                      | ProduceResponse ProduceResponse
@@ -172,14 +167,14 @@ data ResponseMessage = MetadataResponse MetadataResponse
                      | OffsetCommitResponse OffsetCommitResponse
                      | OffsetFetchResponse OffsetFetchResponse
                      | GroupCoordinatorResponse GroupCoordinatorResponse
-                     deriving (Show, Eq)
+                     deriving (Show, Eq, Generic)
 
-newtype GroupCoordinatorRequest = GroupCoordinatorReq ConsumerGroup deriving (Show, Eq, Serializable)
+newtype GroupCoordinatorRequest = GroupCoordinatorReq ConsumerGroup deriving (Show, Eq, Serializable, Generic)
 
-newtype OffsetCommitRequest = OffsetCommitReq (ConsumerGroup, [(TopicName, [(Partition, Offset, Time, Metadata)])]) deriving (Show, Eq, Serializable)
-newtype OffsetFetchRequest = OffsetFetchReq (ConsumerGroup, [(TopicName, [Partition])]) deriving (Show, Eq, Serializable)
-newtype ConsumerGroup = ConsumerGroup KafkaString deriving (Show, Eq, Serializable, Deserializable, IsString)
-newtype Metadata = Metadata KafkaString deriving (Show, Eq, Serializable, Deserializable, IsString)
+newtype OffsetCommitRequest = OffsetCommitReq (ConsumerGroup, [(TopicName, [(Partition, Offset, Time, Metadata)])]) deriving (Show, Eq, Serializable, Generic)
+newtype OffsetFetchRequest = OffsetFetchReq (ConsumerGroup, [(TopicName, [Partition])]) deriving (Show, Eq, Serializable, Generic)
+newtype ConsumerGroup = ConsumerGroup KafkaString deriving (Show, Eq, Serializable, Deserializable, IsString, Generic)
+newtype Metadata = Metadata KafkaString deriving (Show, Eq, Serializable, Deserializable, IsString, Generic)
 
 errorKafka :: KafkaError -> Int16
 errorKafka NoError                             = 0
@@ -217,7 +212,7 @@ data KafkaError = NoError -- ^ @0@ No error--it worked!
                 | OffsetsLoadInProgressCode -- ^ @14@ The broker returns this error code for an offset fetch request if it is still loading offsets (after a leader change for that offsets topic partition).
                 | ConsumerCoordinatorNotAvailableCode -- ^ @15@ The broker returns this error code for consumer metadata requests or offset commit requests if the offsets topic has not yet been created.
                 | NotCoordinatorForConsumerCode -- ^ @16@ The broker returns this error code if it receives an offset fetch or commit request for a consumer group that it is not a coordinator for.
-                deriving (Eq, Show)
+                deriving (Bounded, Enum, Eq, Generic, Show)
 
 instance Serializable KafkaError where
   serialize = serialize . errorKafka
@@ -247,7 +242,7 @@ instance Deserializable KafkaError where
 
 instance Exception KafkaError
 
-newtype Request = Request (CorrelationId, ClientId, RequestMessage) deriving (Show, Eq)
+newtype Request = Request (CorrelationId, ClientId, RequestMessage) deriving (Show, Eq, Generic)
 
 instance Serializable Request where
   serialize (Request (correlationId, clientId, r)) = do

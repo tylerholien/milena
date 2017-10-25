@@ -1,76 +1,79 @@
-name:                milena
+-- This file has been generated from package.yaml by hpack version 0.18.1.
+--
+-- see: https://github.com/sol/hpack
 
--- http://www.haskell.org/haskellwiki/Package_versioning_policy
--- PVP summary:      +-+------- breaking API changes
---                   | | +----- non-breaking API additions
---                   | | | +--- code changes with no API change
-version:             0.5.1.0
-synopsis:            A Kafka client for Haskell.
-description:
-  A Kafka client for Haskell.
-  The protocol module is stable (the only changes will be to support changes in the Kafka protocol). The API is functional but subject to change.
-license:             BSD3
-license-file:        LICENSE
-author:              Tyler Holien
-maintainer:          adam@adamflott.com
-copyright:           2014, Tyler Holien
-category:            Network
-build-type:          Simple
-stability:           alpha
-cabal-version:       >=1.10
-extra-source-files:  README.md
-bug-reports:         https://github.com/adamflott/milena/issues
-tested-with:         GHC == 7.10.3, GHC == 8.0.1
+name:           milena
+version:        0.5.2.0
+synopsis:       A Kafka client for Haskell.
+description:    A Kafka client for Haskell.
+                The protocol module is stable (the only changes will be to support changes in the Kafka protocol). The API is functional but subject to change.
+category:       Network
+stability:      alpha
+homepage:       https://github.com/adamflott/milena.git#readme
+bug-reports:    https://github.com/adamflott/milena.git/issues
+author:         Tyler Holien
+maintainer:     adam@adamflott.com
+copyright:      2014, Tyler Holien
+license:        BSD3
+license-file:   LICENSE
+tested-with:    GHC==7.10.3 GHC==8.0.1
+build-type:     Simple
+cabal-version:  >= 1.10
+
 extra-source-files:
     CHANGELOG.md
+    README.md
 
 source-repository head
   type: git
   location: https://github.com/adamflott/milena.git
 
-source-repository this
-  type: git
-  location: https://github.com/adamflott/milena.git
-  tag: 0.5.0.2
-
 library
+  default-extensions: ConstraintKinds DeriveGeneric FlexibleContexts GADTs GeneralizedNewtypeDeriving OverloadedStrings Rank2Types TemplateHaskell
+  ghc-options: -Wall -O -fwarn-unused-imports -Wincomplete-uni-patterns -Wincomplete-record-updates
+  build-depends:
+      base >=4.7 && <5
+    , bytestring >=0.10 && <0.11
+    , cereal >=0.4 && <0.6
+    , containers >=0.5 && <0.6
+    , digest >=0.0.1.0 && <0.1
+    , lens >=4.4 && <4.16
+    , lifted-base >=0.2.3.6 && <0.3
+    , monad-control >=1.0 && <1.1
+    , mtl >=2.1 && <2.3
+    , murmur-hash >=0.1.0.8 && <0.2
+    , network >=2.4 && <2.7
+    , random >=1.0 && <1.2
+    , resource-pool >=0.2.3.2 && <0.3
+    , semigroups >=0.16.2.2 && <0.19
+    , transformers >=0.3 && <0.6
+    , zlib >=0.6.1.2 && <0.7
+  exposed-modules:
+      Network.Kafka
+      Network.Kafka.Consumer
+      Network.Kafka.Protocol
+      Network.Kafka.Producer
+  other-modules:
+      Paths_milena
   default-language: Haskell2010
-  ghc-options:         -Wall -fwarn-incomplete-uni-patterns
-  exposed-modules:     Network.Kafka,
-                       Network.Kafka.Consumer,
-                       Network.Kafka.Protocol,
-                       Network.Kafka.Producer
-  build-depends:       base          >=4.7      && <5,
-                       mtl           >=2.1      && <2.3,
-                       cereal        >=0.4      && <0.6,
-                       bytestring    >=0.10     && <0.11,
-                       network       >=2.4      && <2.7,
-                       digest        >=0.0.1.0  && <0.1,
-                       containers    >=0.5      && <0.6,
-                       monad-control >=1.0      && <1.1,
-                       random        >=1.0      && <1.2,
-                       transformers  >=0.3      && <0.6,
-                       lens          >=4.4      && <4.16,
-                       resource-pool >=0.2.3.2  && <0.3,
-                       lifted-base   >=0.2.3.6  && <0.3,
-                       murmur-hash   >=0.1.0.8  && <0.2,
-                       semigroups    >=0.16.2.2 && <0.19,
-                       zlib          >=0.6.1.2  && <0.7
 
 test-suite test
+  type: exitcode-stdio-1.0
+  main-is: tests.hs
+  hs-source-dirs:
+      test
+  default-extensions: ConstraintKinds DeriveGeneric FlexibleContexts GADTs GeneralizedNewtypeDeriving OverloadedStrings Rank2Types TemplateHaskell
+  ghc-options: -Wall -O -fwarn-unused-imports -Wincomplete-uni-patterns -Wincomplete-record-updates -threaded -rtsopts
+  build-depends:
+      base
+    , milena
+    , mtl
+    , network
+    , QuickCheck
+    , bytestring
+    , lens
+    , semigroups
+    , tasty
+    , tasty-hspec
+    , tasty-quickcheck
   default-language: Haskell2010
-  ghc-options:         -Wall -threaded -fwarn-incomplete-uni-patterns
-  build-depends:       base,
-                       milena,
-                       mtl,
-                       network,
-                       QuickCheck,
-                       bytestring,
-                       lens,
-                       semigroups,
-                       tasty,
-                       tasty-hspec,
-                       tasty-quickcheck
-  hs-source-dirs:      test
-  main-is:             tests.hs
-  type:                exitcode-stdio-1.0

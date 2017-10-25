@@ -1,0 +1,82 @@
+name: milena
+version: '0.5.2.0'
+synopsis: A Kafka client for Haskell.
+description: ! 'A Kafka client for Haskell.
+
+  The protocol module is stable (the only changes will be to support changes in the
+  Kafka protocol). The API is functional but subject to change.'
+category: Network
+author: Tyler Holien
+maintainer: adam@adamflott.com
+copyright: 2014, Tyler Holien
+license: BSD3
+github: adamflott/milena.git
+tested-with: GHC==7.10.3 GHC==8.0.1
+stability: alpha
+
+extra-source-files:
+  - README.md
+  - CHANGELOG.md
+
+ghc-options:
+  - -Wall
+  - -O
+  - -fwarn-unused-imports
+  - -Wincomplete-uni-patterns
+  - -Wincomplete-record-updates
+
+default-extensions:
+  - ConstraintKinds
+  - DeriveGeneric
+  - FlexibleContexts
+  - GADTs
+  - GeneralizedNewtypeDeriving
+  - OverloadedStrings
+  - Rank2Types
+  - TemplateHaskell
+
+
+library:
+  exposed-modules:
+    - Network.Kafka
+    - Network.Kafka.Consumer
+    - Network.Kafka.Protocol
+    - Network.Kafka.Producer
+
+  dependencies:
+    - base >=4.7 && <5
+    - bytestring >=0.10 && <0.11
+    - cereal >=0.4 && <0.6
+    - containers >=0.5 && <0.6
+    - digest >=0.0.1.0 && <0.1
+    - lens >=4.4 && <4.16
+    - lifted-base >=0.2.3.6 && <0.3
+    - monad-control >=1.0 && <1.1
+    - mtl >=2.1 && <2.3
+    - murmur-hash >=0.1.0.8 && <0.2
+    - network >=2.4 && <2.7
+    - random >=1.0 && <1.2
+    - resource-pool >=0.2.3.2 && <0.3
+    - semigroups >=0.16.2.2 && <0.19
+    - transformers >=0.3 && <0.6
+    - zlib >=0.6.1.2 && <0.7
+
+tests:
+  test:
+    main: tests.hs
+    source-dirs: test
+    ghc-options:
+      - -threaded
+      - -rtsopts
+    dependencies:
+      - base
+      - milena
+      - mtl
+      - network
+      - QuickCheck
+      - bytestring
+      - lens
+      - semigroups
+      - tasty
+      - tasty-hspec
+      - tasty-quickcheck

@@ -1,6 +1,3 @@
-{-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE FlexibleContexts #-}
-
 module Network.Kafka.Consumer where
 
 import Control.Applicative

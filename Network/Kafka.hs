@@ -1,8 +1,3 @@
-{-# LANGUAGE ConstraintKinds #-}
-{-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE TemplateHaskell #-}
-{-# LANGUAGE FlexibleContexts #-}
-
 module Network.Kafka where
 
 import Control.Applicative
@@ -19,6 +14,7 @@ import Data.List.NonEmpty (NonEmpty(..))
 import qualified Data.List.NonEmpty as NE
 import Data.Monoid ((<>))
 import qualified Data.Pool as Pool
+import GHC.Generics (Generic)
 import System.IO
 import qualified Data.Map as M
 import Data.Set (Set)
@@ -52,7 +48,7 @@ data KafkaState = KafkaState { -- | Name to use as a client ID.
                              , _stateTopicMetadata :: M.Map TopicName TopicMetadata
                                -- | Address cache
                              , _stateAddresses :: NonEmpty KafkaAddress
-                             } deriving (Show)
+                             } deriving (Generic, Show)
 
 makeLenses ''KafkaState
 
@@ -70,7 +66,7 @@ data KafkaClientError = -- | A response did not contain an offset.
                       | KafkaInvalidBroker Leader
                       | KafkaFailedToFetchMetadata
                       | KafkaIOException IOException
-                        deriving (Eq, Show)
+                        deriving (Eq, Generic, Show)
 
 instance Exception KafkaClientError
 
@@ -81,25 +77,26 @@ data KafkaTime = -- | The latest time on the broker.
                | EarliestTime
                  -- | A specific time.
                | OtherTime Time
+               deriving (Eq, Generic)
 
 data PartitionAndLeader = PartitionAndLeader { _palTopic :: TopicName
                                              , _palPartition :: Partition
                                              , _palLeader :: Leader
                                              }
-                                             deriving (Show, Eq, Ord)
+                                             deriving (Show, Generic, Eq, Ord)
 
 makeLenses ''PartitionAndLeader
 
 data TopicAndPartition = TopicAndPartition { _tapTopic :: TopicName
                                            , _tapPartition :: Partition
                                            }
-                         deriving (Eq, Ord, Show)
+                         deriving (Eq, Generic, Ord, Show)
 
 -- | A topic with a serializable message.
 data TopicAndMessage = TopicAndMessage { _tamTopic :: TopicName
                                        , _tamMessage :: Message
                                        }
-                       deriving (Eq, Show)
+                       deriving (Eq, Generic, Show)
 
 makeLenses ''TopicAndMessage
 
