@@ -30,7 +30,7 @@ source-repository head
 
 library
   default-extensions: ConstraintKinds DeriveGeneric FlexibleContexts GADTs GeneralizedNewtypeDeriving OverloadedStrings Rank2Types TemplateHaskell
-  ghc-options: -Wall -O -fwarn-unused-imports -Wincomplete-uni-patterns -Wincomplete-record-updates
+  ghc-options: -Wall -fwarn-unused-imports -Wincomplete-uni-patterns -Wincomplete-record-updates
   build-depends:
       base >=4.7 && <5
     , bytestring >=0.10 && <0.11
@@ -63,7 +63,7 @@ test-suite test
   hs-source-dirs:
       test
   default-extensions: ConstraintKinds DeriveGeneric FlexibleContexts GADTs GeneralizedNewtypeDeriving OverloadedStrings Rank2Types TemplateHaskell
-  ghc-options: -Wall -O -fwarn-unused-imports -Wincomplete-uni-patterns -Wincomplete-record-updates -threaded -rtsopts
+  ghc-options: -Wall -fwarn-unused-imports -Wincomplete-uni-patterns -Wincomplete-record-updates -threaded -rtsopts
   build-depends:
       base
     , milena
