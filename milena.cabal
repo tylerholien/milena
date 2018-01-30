@@ -1,9 +1,11 @@
--- This file has been generated from package.yaml by hpack version 0.18.1.
+-- This file has been generated from package.yaml by hpack version 0.21.2.
 --
 -- see: https://github.com/sol/hpack
+--
+-- hash: caf168b302b415e12e3292900e3b24a426fec937f43081a8806c3f9220afcb52
 
 name:           milena
-version:        0.5.2.0
+version:        0.5.2.1
 synopsis:       A Kafka client for Haskell.
 description:    A Kafka client for Haskell.
                 The protocol module is stable (the only changes will be to support changes in the Kafka protocol). The API is functional but subject to change.
@@ -37,7 +39,7 @@ library
     , cereal >=0.4 && <0.6
     , containers >=0.5 && <0.6
     , digest >=0.0.1.0 && <0.1
-    , lens >=4.4 && <4.16
+    , lens >=4.4 && <4.20
     , lifted-base >=0.2.3.6 && <0.3
     , monad-control >=1.0 && <1.1
     , mtl >=2.1 && <2.3
@@ -60,18 +62,20 @@ library
 test-suite test
   type: exitcode-stdio-1.0
   main-is: tests.hs
+  other-modules:
+      Paths_milena
   hs-source-dirs:
       test
   default-extensions: ConstraintKinds DeriveGeneric FlexibleContexts GADTs GeneralizedNewtypeDeriving OverloadedStrings Rank2Types TemplateHaskell
   ghc-options: -Wall -fwarn-unused-imports -Wincomplete-uni-patterns -Wincomplete-record-updates -threaded -rtsopts
   build-depends:
-      base
+      QuickCheck
+    , base
+    , bytestring
+    , lens
     , milena
     , mtl
     , network
-    , QuickCheck
-    , bytestring
-    , lens
     , semigroups
     , tasty
     , tasty-hspec
