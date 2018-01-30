@@ -1,3 +1,7 @@
+0.5.2.1
+
+* Bump lens upper bounds
+
 0.5.2.0
 
 * Switch to hpack
