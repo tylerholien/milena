@@ -1,3 +1,7 @@
+0.5.2.2
+
+* Bump network upper bounds
+
 0.5.2.1
 
 * Bump lens upper bounds
