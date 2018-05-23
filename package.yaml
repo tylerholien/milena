@@ -1,5 +1,5 @@
 name: milena
-version: '0.5.2.1'
+version: '0.5.2.2'
 synopsis: A Kafka client for Haskell.
 description: ! 'A Kafka client for Haskell.
 
@@ -53,7 +53,7 @@ library:
     - monad-control >=1.0 && <1.1
     - mtl >=2.1 && <2.3
     - murmur-hash >=0.1.0.8 && <0.2
-    - network >=2.4 && <2.7
+    - network >=2.4 && <2.8
     - random >=1.0 && <1.2
     - resource-pool >=0.2.3.2 && <0.3
     - semigroups >=0.16.2.2 && <0.19

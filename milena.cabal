@@ -1,8 +1,8 @@
--- This file has been generated from package.yaml by hpack version 0.21.2.
+-- This file has been generated from package.yaml by hpack version 0.28.2.
 --
 -- see: https://github.com/sol/hpack
 --
--- hash: caf168b302b415e12e3292900e3b24a426fec937f43081a8806c3f9220afcb52
+-- hash: 2faa8f37a431f4f1c343faf88d70eb0df20eeab4ec60b3f88a2c3cfc6fee68ca
 
 name:           milena
 version:        0.5.2.1
@@ -21,7 +21,6 @@ license-file:   LICENSE
 tested-with:    GHC==7.10.3 GHC==8.0.1
 build-type:     Simple
 cabal-version:  >= 1.10
-
 extra-source-files:
     CHANGELOG.md
     README.md
@@ -44,7 +43,7 @@ library
     , monad-control >=1.0 && <1.1
     , mtl >=2.1 && <2.3
     , murmur-hash >=0.1.0.8 && <0.2
-    , network >=2.4 && <2.7
+    , network >=2.4 && <2.8
     , random >=1.0 && <1.2
     , resource-pool >=0.2.3.2 && <0.3
     , semigroups >=0.16.2.2 && <0.19
